@@ -1,0 +1,24 @@
+# 核心依赖
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.21.0
+Pillow>=9.0.0
+tqdm>=4.64.0
+pyyaml>=6.0
+scipy>=1.9.0
+matplotlib>=3.5.0
+
+# Hugging Face Transformers (用于加载预训练模型)
+transformers>=4.35.0
+
+# 深度估计 - Depth Anything V2
+# 通过transformers加载，无需额外安装
+
+# 语义分割 - Mask2Former, SegFormer, OneFormer
+# 通过transformers加载，无需额外安装
+
+# 可选：timm (某些模型backbone需要)
+timm>=0.9.0
+
+# 可选：accelerate (加速推理)
+accelerate>=0.25.0

@@ -1,0 +1,55 @@
+# 评测配置文件
+
+# 数据路径
+data:
+  root: "/mnt/zihanw/Output_R2V_world_foundation_model_v1/inference/_eval_frames"
+  cameras:
+    - "cross_left_120fov"
+    - "cross_right_120fov"
+    - "front_tele_30fov"
+    - "front_wide_120fov"
+  gen_folder: "gen"
+  gt_folder: "gt"
+
+# 输出路径
+output:
+  root: "./results"
+  depth_maps: "./results/depth_maps"
+  seg_maps: "./results/seg_maps"
+  metrics: "./results/metrics"
+
+# 深度估计模型配置
+depth:
+  model: "depth_anything_v2"  # 可选: depth_anything_v2, midas, metric3d
+  model_size: "vitl"  # vits, vitb, vitl, vitg
+  device: "cuda"
+
+# 语义分割模型配置
+segmentation:
+  model: "mask2former"  # 可选: mask2former, segformer, internimage
+  backbone: "swin-l"  # Cityscapes预训练
+  dataset: "cityscapes"  # 使用cityscapes类别映射
+  device: "cuda"
+
+# 评测指标
+metrics:
+  depth:
+    - "abs_rel"      # 绝对相对误差
+    - "sq_rel"       # 平方相对误差
+    - "rmse"         # 均方根误差
+    - "rmse_log"     # 对数均方根误差
+    - "delta_1"      # δ < 1.25
+    - "delta_2"      # δ < 1.25²
+    - "delta_3"      # δ < 1.25³
+  segmentation:
+    - "miou"         # 平均IoU
+    - "pixel_acc"    # 像素准确率
+    - "class_iou"    # 每类IoU
+    - "fwiou"        # 频率加权IoU
+
+# 处理参数
+processing:
+  batch_size: 4
+  num_workers: 4
+  image_size: [1024, 1024]  # 评测时的图像大小
+  save_visualizations: true
