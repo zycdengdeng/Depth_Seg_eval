@@ -47,7 +47,7 @@ class DepthAnythingV2Estimator(DepthEstimator):
     https://github.com/DepthAnything/Depth-Anything-V2
     """
 
-    def __init__(self, model_size: str = "vitl", device: str = "cuda"):
+    def __init__(self, model_size: str = "large", device: str = "cuda"):
         super().__init__(device)
         self.model_size = model_size
         self._load_model()
@@ -58,7 +58,17 @@ class DepthAnythingV2Estimator(DepthEstimator):
             # 尝试从transformers加载
             from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
-            model_name = f"depth-anything/Depth-Anything-V2-{self.model_size.capitalize()}-hf"
+            # 正确的HuggingFace模型名称映射
+            model_mapping = {
+                "small": "depth-anything/Depth-Anything-V2-Small-hf",
+                "base": "depth-anything/Depth-Anything-V2-Base-hf",
+                "large": "depth-anything/Depth-Anything-V2-Large-hf",
+                # 兼容旧配置
+                "vits": "depth-anything/Depth-Anything-V2-Small-hf",
+                "vitb": "depth-anything/Depth-Anything-V2-Base-hf",
+                "vitl": "depth-anything/Depth-Anything-V2-Large-hf",
+            }
+            model_name = model_mapping.get(self.model_size.lower(), model_mapping["large"])
             print(f"加载 Depth Anything V2 模型: {model_name}")
 
             self.processor = AutoImageProcessor.from_pretrained(model_name)

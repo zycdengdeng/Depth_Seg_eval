@@ -21,7 +21,7 @@ output:
 # 深度估计模型配置
 depth:
   model: "depth_anything_v2"  # 可选: depth_anything_v2, midas, metric3d
-  model_size: "vitl"  # vits, vitb, vitl, vitg
+  model_size: "large"  # small, base, large (或旧名: vits, vitb, vitl)
   device: "cuda"
 
 # 语义分割模型配置
