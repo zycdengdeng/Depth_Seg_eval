@@ -14,10 +14,29 @@ import os
 import sys
 import json
 import argparse
+import numpy as np
 from datetime import datetime
 from typing import Dict, Optional
 
 from utils import load_config, ensure_dir
+
+
+def convert_to_serializable(obj):
+    """将numpy类型转换为Python原生类型，以便JSON序列化"""
+    if isinstance(obj, dict):
+        return {k: convert_to_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_serializable(v) for v in obj]
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.float32, np.float64)):
+        return float(obj)
+    elif isinstance(obj, (np.int32, np.int64)):
+        return int(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    else:
+        return obj
 
 
 def run_depth_evaluation(config: Dict, save_vis: bool = True) -> Dict:
@@ -166,7 +185,7 @@ def main():
             # 保存深度结果
             depth_output = os.path.join(config['output']['metrics'], 'depth_results.json')
             with open(depth_output, 'w') as f:
-                json.dump(depth_results, f, indent=2)
+                json.dump(convert_to_serializable(depth_results), f, indent=2)
             print(f"深度评测结果已保存到: {depth_output}")
         except Exception as e:
             print(f"深度评测出错: {e}")
@@ -182,7 +201,7 @@ def main():
             # 保存分割结果
             seg_output = os.path.join(config['output']['metrics'], 'seg_results.json')
             with open(seg_output, 'w') as f:
-                json.dump(seg_results, f, indent=2)
+                json.dump(convert_to_serializable(seg_results), f, indent=2)
             print(f"分割评测结果已保存到: {seg_output}")
         except Exception as e:
             print(f"分割评测出错: {e}")
@@ -204,7 +223,7 @@ def main():
         }
         full_output = os.path.join(config['output']['metrics'], 'full_results.json')
         with open(full_output, 'w') as f:
-            json.dump(full_results, f, indent=2)
+            json.dump(convert_to_serializable(full_results), f, indent=2)
         print(f"完整结果已保存到: {full_output}")
 
 
