@@ -234,16 +234,20 @@ def aggregate_metrics(metrics_list: List[Dict[str, float]]) -> Dict[str, float]:
     keys = metrics_list[0].keys()
 
     for key in keys:
-        values = [m[key] for m in metrics_list if not np.isnan(m[key])]
-        if values:
-            if isinstance(values[0], list):
-                # 对于class_iou等列表类型
-                aggregated[key] = np.nanmean(values, axis=0).tolist()
-            else:
+        raw_values = [m[key] for m in metrics_list]
+
+        # 检查是否是列表类型（如class_iou）
+        if isinstance(raw_values[0], (list, np.ndarray)):
+            # 对于class_iou等列表类型，直接计算nanmean
+            aggregated[key] = np.nanmean(raw_values, axis=0).tolist()
+        else:
+            # 标量类型，过滤nan值
+            values = [v for v in raw_values if not np.isnan(v)]
+            if values:
                 aggregated[key] = np.mean(values)
                 aggregated[f'{key}_std'] = np.std(values)
-        else:
-            aggregated[key] = float('nan')
+            else:
+                aggregated[key] = float('nan')
 
     return aggregated
 
