@@ -20,6 +20,11 @@ transformers>=4.35.0
 # SAM评测需要sklearn
 scikit-learn>=1.0.0
 
+# 图像质量指标
+scikit-image>=0.19.0   # SSIM
+lpips>=0.1.4           # LPIPS感知相似度
+clean-fid>=0.1.35      # FID计算
+
 # 可选：timm (某些模型backbone需要)
 timm>=0.9.0
 

@@ -224,6 +224,49 @@ def _worker_sam(camera: str, pairs: List[Tuple[str, str]],
         result_dict[camera] = {}
 
 
+def _worker_image_metrics(camera: str, pairs: List[Tuple[str, str]],
+                          config: Dict, gpu_id: int, save_vis: bool,
+                          result_dict: dict):
+    """单GPU图像质量指标worker (PSNR/SSIM/LPIPS)"""
+    try:
+        import torch
+        torch.cuda.set_device(gpu_id)
+
+        from image_metrics_eval import ImageMetricsEvaluator, compute_fid_for_camera
+        from utils import load_image
+        from tqdm import tqdm
+
+        device = f'cuda:{gpu_id}'
+        evaluator = ImageMetricsEvaluator(device=device)
+
+        camera_metrics = []
+
+        for gen_path, gt_path in tqdm(pairs, desc=f"  [GPU:{gpu_id}] {camera}"):
+            gen_img = load_image(gen_path)
+            gt_img = load_image(gt_path)
+
+            metrics = evaluator.evaluate_pair(gen_img, gt_img)
+            camera_metrics.append(metrics)
+
+        camera_result = aggregate_metrics(camera_metrics)
+
+        # 计算FID（分布级指标）
+        root = config['data']['root']
+        gen_dir = os.path.join(root, camera, config['data']['gen_folder'])
+        gt_dir = os.path.join(root, camera, config['data']['gt_folder'])
+        print(f"\n  [GPU:{gpu_id}] {camera} 计算FID...")
+        fid_score = compute_fid_for_camera(gen_dir, gt_dir, device=device)
+        camera_result['fid'] = fid_score
+
+        result_dict[camera] = camera_result
+        print(f"\n  [GPU:{gpu_id}] {camera} 完成!")
+
+    except Exception as e:
+        print(f"\n  [GPU:{gpu_id}] {camera} 出错: {e}")
+        traceback.print_exc()
+        result_dict[camera] = {}
+
+
 def _preload_models(task: str, config: Dict):
     """
     在主进程中预下载模型到缓存，避免多进程同时下载导致冲突
@@ -266,6 +309,12 @@ def _preload_models(task: str, config: Dict):
         print(f"  预加载 SAM: {model_name}")
         SamProcessor.from_pretrained(model_name)
         SamModel.from_pretrained(model_name)
+
+    elif task == 'image_metrics':
+        import lpips
+        print("  预加载 LPIPS (AlexNet)...")
+        _ = lpips.LPIPS(net='alex')
+        print("  LPIPS 缓存就绪")
 
     print("模型缓存就绪!\n")
 
@@ -318,6 +367,7 @@ def evaluate_parallel(config: Dict, task: str = "depth",
         'seg': _worker_seg,
         'segmentation': _worker_seg,
         'sam': _worker_sam,
+        'image_metrics': _worker_image_metrics,
     }[task]
 
     # 创建输出目录
