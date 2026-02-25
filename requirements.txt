@@ -17,6 +17,9 @@ transformers>=4.35.0
 # 语义分割 - Mask2Former, SegFormer, OneFormer
 # 通过transformers加载，无需额外安装
 
+# SAM评测需要sklearn
+scikit-learn>=1.0.0
+
 # 可选：timm (某些模型backbone需要)
 timm>=0.9.0
 

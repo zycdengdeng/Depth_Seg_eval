@@ -51,9 +51,16 @@ def run_segmentation_evaluation(config: Dict, save_vis: bool = True) -> Dict:
     return evaluate_segmentation_consistency(config, save_vis=save_vis)
 
 
+def run_sam_evaluation(config: Dict, save_vis: bool = True) -> Dict:
+    """运行SAM结构一致性评测"""
+    from sam_eval import evaluate_sam_consistency
+    return evaluate_sam_consistency(config, save_vis=save_vis)
+
+
 def generate_report(depth_results: Optional[Dict],
                     seg_results: Optional[Dict],
-                    output_path: str):
+                    output_path: str,
+                    sam_results: Optional[Dict] = None):
     """生成综合评测报告"""
     report = []
     report.append("=" * 70)
@@ -120,6 +127,43 @@ def generate_report(depth_results: Optional[Dict],
                     if key in results:
                         report.append(f"    {key:<12}: {results[key]:.2f}%")
 
+    if sam_results:
+        report.append("\n\n## SAM 结构一致性评测")
+        report.append("-" * 50)
+        report.append("评测指标说明:")
+        report.append("  - edge_f1: 边缘F1分数 (越高越好)")
+        report.append("  - edge_correlation: 边缘相关系数 (越高越好)")
+        report.append("  - edge_precision/recall: 边缘精确率/召回率 (越高越好)")
+        report.append("-" * 50)
+
+        if 'overall' in sam_results:
+            overall = sam_results['overall']
+            report.append("\n总体结果:")
+            for key in ['edge_f1', 'edge_correlation', 'edge_precision', 'edge_recall']:
+                if key in overall:
+                    value = overall[key]
+                    std_key = f'{key}_std'
+                    if key == 'edge_correlation':
+                        fmt = f"  {key:<20}: {value:.4f}"
+                        if std_key in overall:
+                            fmt += f" ± {overall[std_key]:.4f}"
+                    else:
+                        fmt = f"  {key:<20}: {value:.2f}%"
+                        if std_key in overall:
+                            fmt += f" ± {overall[std_key]:.2f}%"
+                    report.append(fmt)
+
+        report.append("\n各相机结果:")
+        for camera, results in sam_results.items():
+            if camera != 'overall':
+                report.append(f"\n  [{camera}]")
+                for key in ['edge_f1', 'edge_correlation']:
+                    if key in results:
+                        if key == 'edge_correlation':
+                            report.append(f"    {key:<20}: {results[key]:.4f}")
+                        else:
+                            report.append(f"    {key:<20}: {results[key]:.2f}%")
+
     report.append("\n" + "=" * 70)
     report.append("评测完成")
     report.append("=" * 70)
@@ -143,8 +187,8 @@ def main():
     )
     parser.add_argument(
         "--task", type=str, default="all",
-        choices=["all", "depth", "segmentation", "seg"],
-        help="评测任务: all(全部), depth(深度), segmentation/seg(分割)"
+        choices=["all", "depth", "segmentation", "seg", "sam"],
+        help="评测任务: all(全部), depth(深度), segmentation/seg(语义分割), sam(SAM结构)"
     )
     parser.add_argument(
         "--no-vis", action="store_true",
@@ -174,6 +218,7 @@ def main():
     # 运行评测
     depth_results = None
     seg_results = None
+    sam_results = None
     save_vis = not args.no_vis
 
     if args.task in ["all", "depth"]:
@@ -208,10 +253,26 @@ def main():
             import traceback
             traceback.print_exc()
 
+    if args.task in ["all", "sam"]:
+        print("\n" + "=" * 70)
+        print("开始SAM结构一致性评测...")
+        print("=" * 70)
+        try:
+            sam_results = run_sam_evaluation(config, save_vis=save_vis)
+            # 保存SAM结果
+            sam_output = os.path.join(config['output']['metrics'], 'sam_results.json')
+            with open(sam_output, 'w') as f:
+                json.dump(convert_to_serializable(sam_results), f, indent=2)
+            print(f"SAM评测结果已保存到: {sam_output}")
+        except Exception as e:
+            print(f"SAM评测出错: {e}")
+            import traceback
+            traceback.print_exc()
+
     # 生成综合报告
-    if depth_results or seg_results:
+    if depth_results or seg_results or sam_results:
         report_path = os.path.join(config['output']['metrics'], 'evaluation_report.txt')
-        generate_report(depth_results, seg_results, report_path)
+        generate_report(depth_results, seg_results, report_path, sam_results=sam_results)
         print(f"\n综合报告已保存到: {report_path}")
 
         # 保存完整JSON结果
@@ -219,7 +280,8 @@ def main():
             'timestamp': datetime.now().isoformat(),
             'config': config,
             'depth': depth_results,
-            'segmentation': seg_results
+            'segmentation': seg_results,
+            'sam': sam_results
         }
         full_output = os.path.join(config['output']['metrics'], 'full_results.json')
         with open(full_output, 'w') as f:
