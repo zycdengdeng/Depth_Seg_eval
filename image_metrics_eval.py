@@ -127,7 +127,9 @@ def compute_fid_for_camera(gen_dir: str, gt_dir: str,
     """
     try:
         from cleanfid import fid
-        score = fid.compute_fid(gen_dir, gt_dir, device=torch.device(device))
+        score = fid.compute_fid(gen_dir, gt_dir,
+                                device=torch.device(device),
+                                num_workers=0)  # 禁止嵌套多进程，避免spawn下pickle冲突
         return float(score)
     except ImportError:
         print("警告: cleanfid未安装，使用torch-fidelity计算FID...")

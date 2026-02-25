@@ -250,13 +250,17 @@ def _worker_image_metrics(camera: str, pairs: List[Tuple[str, str]],
 
         camera_result = aggregate_metrics(camera_metrics)
 
-        # 计算FID（分布级指标）
-        root = config['data']['root']
-        gen_dir = os.path.join(root, camera, config['data']['gen_folder'])
-        gt_dir = os.path.join(root, camera, config['data']['gt_folder'])
-        print(f"\n  [GPU:{gpu_id}] {camera} 计算FID...")
-        fid_score = compute_fid_for_camera(gen_dir, gt_dir, device=device)
-        camera_result['fid'] = fid_score
+        # 计算FID（分布级指标），失败不影响其他指标
+        try:
+            root = config['data']['root']
+            gen_dir = os.path.join(root, camera, config['data']['gen_folder'])
+            gt_dir = os.path.join(root, camera, config['data']['gt_folder'])
+            print(f"\n  [GPU:{gpu_id}] {camera} 计算FID...")
+            fid_score = compute_fid_for_camera(gen_dir, gt_dir, device=device)
+            camera_result['fid'] = fid_score
+        except Exception as fid_err:
+            print(f"\n  [GPU:{gpu_id}] {camera} FID计算失败: {fid_err}")
+            camera_result['fid'] = float('nan')
 
         result_dict[camera] = camera_result
         print(f"\n  [GPU:{gpu_id}] {camera} 完成!")
