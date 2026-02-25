@@ -222,6 +222,52 @@ def _worker_sam(camera: str, pairs: List[Tuple[str, str]],
         result_dict[camera] = {}
 
 
+def _preload_models(task: str, config: Dict):
+    """
+    在主进程中预下载模型到缓存，避免多进程同时下载导致冲突
+
+    Args:
+        task: 评测任务类型
+        config: 配置字典
+    """
+    print("预下载模型到缓存...")
+
+    if task == 'depth':
+        from transformers import AutoModelForDepthEstimation, AutoImageProcessor
+        model_mapping = {
+            "small": "depth-anything/Depth-Anything-V2-Small-hf",
+            "base": "depth-anything/Depth-Anything-V2-Base-hf",
+            "large": "depth-anything/Depth-Anything-V2-Large-hf",
+        }
+        model_size = config.get('depth', {}).get('model_size', 'large')
+        model_name = model_mapping.get(model_size, model_mapping["large"])
+        print(f"  预加载 Depth Anything V2: {model_name}")
+        AutoImageProcessor.from_pretrained(model_name)
+        AutoModelForDepthEstimation.from_pretrained(model_name)
+
+    elif task in ['seg', 'segmentation']:
+        from transformers import Mask2FormerForUniversalSegmentation, AutoImageProcessor
+        model_name = "facebook/mask2former-swin-large-cityscapes-semantic"
+        print(f"  预加载 Mask2Former: {model_name}")
+        AutoImageProcessor.from_pretrained(model_name)
+        Mask2FormerForUniversalSegmentation.from_pretrained(model_name)
+
+    elif task == 'sam':
+        from transformers import SamModel, SamProcessor
+        model_mapping = {
+            "base": "facebook/sam-vit-base",
+            "large": "facebook/sam-vit-large",
+            "huge": "facebook/sam-vit-huge",
+        }
+        model_size = config.get('sam', {}).get('model_size', 'large')
+        model_name = model_mapping.get(model_size, model_mapping["large"])
+        print(f"  预加载 SAM: {model_name}")
+        SamProcessor.from_pretrained(model_name)
+        SamModel.from_pretrained(model_name)
+
+    print("模型缓存就绪!\n")
+
+
 def evaluate_parallel(config: Dict, task: str = "depth",
                       gpu_ids: Optional[List[int]] = None,
                       save_vis: bool = True) -> Dict[str, Dict]:
@@ -243,6 +289,9 @@ def evaluate_parallel(config: Dict, task: str = "depth",
         gpu_ids = list(range(num_gpus))
 
     print(f"\n可用GPU: {gpu_ids}")
+
+    # 预下载模型，避免多进程并发下载冲突
+    _preload_models(task, config)
 
     # 获取图像对
     image_pairs = get_image_pairs(config)
@@ -292,9 +341,12 @@ def evaluate_parallel(config: Dict, task: str = "depth",
         )
         processes.append(p)
 
-    # 启动所有进程
-    for p in processes:
+    # 依次启动进程，间隔2秒避免资源竞争
+    import time
+    for i, p in enumerate(processes):
         p.start()
+        if i < len(processes) - 1:
+            time.sleep(2)
 
     # 等待所有进程完成
     for p in processes:
