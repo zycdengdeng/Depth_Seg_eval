@@ -116,6 +116,98 @@ def align_depth_scale(pred: np.ndarray, gt: np.ndarray, method: str = "median") 
     return pred * scale
 
 
+def align_spatial(pred: np.ndarray, gt: np.ndarray,
+                  max_shift: int = 20) -> Tuple[np.ndarray, Tuple[int, int]]:
+    """
+    全局空间对齐：用互相关找最优平移量，补偿时间偏移导致的像素漂移
+
+    Args:
+        pred: 预测深度图 (H, W)
+        gt: 真值深度图 (H, W)
+        max_shift: 最大搜索平移量（像素）
+
+    Returns:
+        aligned_pred: 对齐后的预测深度图
+        (dy, dx): 最优平移量
+    """
+    from scipy.signal import fftconvolve
+
+    # 归一化后做互相关
+    pred_norm = (pred - pred.mean()) / (pred.std() + 1e-8)
+    gt_norm = (gt - gt.mean()) / (gt.std() + 1e-8)
+
+    # FFT互相关
+    cross_corr = fftconvolve(gt_norm, pred_norm[::-1, ::-1], mode='full')
+
+    h, w = pred.shape
+    # 互相关中心对应零位移
+    center_y, center_x = h - 1, w - 1
+
+    # 只在max_shift范围内搜索
+    y_start = max(0, center_y - max_shift)
+    y_end = min(cross_corr.shape[0], center_y + max_shift + 1)
+    x_start = max(0, center_x - max_shift)
+    x_end = min(cross_corr.shape[1], center_x + max_shift + 1)
+
+    search_region = cross_corr[y_start:y_end, x_start:x_end]
+    peak = np.unravel_index(search_region.argmax(), search_region.shape)
+
+    dy = peak[0] + y_start - center_y
+    dx = peak[1] + x_start - center_x
+
+    # 应用平移
+    from scipy.ndimage import shift
+    aligned_pred = shift(pred, [dy, dx], order=1, mode='reflect')
+
+    return aligned_pred, (int(dy), int(dx))
+
+
+def compute_tolerant_metrics(pred: np.ndarray, gt: np.ndarray,
+                              window_size: int = 5,
+                              min_depth: float = 1e-3) -> np.ndarray:
+    """
+    局部窗口容差：对于每个像素，在窗口内找最小误差的匹配
+
+    Args:
+        pred: 预测深度图 (H, W)
+        gt: 真值深度图 (H, W)
+        window_size: 搜索窗口大小（奇数）
+        min_depth: 最小有效深度
+
+    Returns:
+        best_match_gt: 每个pred像素对应的最优gt匹配值
+    """
+    from scipy.ndimage import minimum_filter, maximum_filter
+
+    pad = window_size // 2
+    h, w = pred.shape
+
+    # 对于每个pred像素，找gt窗口内使得 |pred-gt|/gt 最小的值
+    # 近似：用gt的local min和local max来bound
+    best_match_gt = np.copy(gt)
+
+    mask = (gt > min_depth) & (pred > min_depth)
+
+    # 对gt做sliding window，找每个位置的最小误差匹配
+    ratio = np.where(mask, pred / gt, 1.0)
+
+    # 如果pred > gt，最好的匹配是gt窗口里最大的值
+    # 如果pred < gt，最好的匹配是gt窗口里最小的值
+    gt_local_min = minimum_filter(gt, size=window_size)
+    gt_local_max = maximum_filter(gt, size=window_size)
+
+    # 选择使ratio更接近1的匹配
+    best_match_gt = np.where(
+        pred > gt,
+        np.minimum(gt_local_max, pred),  # pred偏大时，取gt邻域最大值
+        np.maximum(gt_local_min, pred),  # pred偏小时，取gt邻域最小值
+    )
+    # 但不能超出gt local范围
+    best_match_gt = np.clip(best_match_gt, gt_local_min, gt_local_max)
+
+    return best_match_gt
+
+
 def save_depth_visualization(depth: np.ndarray, path: str, cmap: str = "magma"):
     """保存深度图可视化"""
     import matplotlib.pyplot as plt

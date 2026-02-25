@@ -109,6 +109,58 @@ def compute_depth_correlation(pred: np.ndarray, gt: np.ndarray,
     }
 
 
+def compute_depth_ssim(pred: np.ndarray, gt: np.ndarray,
+                        window_size: int = 11) -> Dict[str, float]:
+    """
+    计算深度图的SSIM（结构相似性指数）
+    SSIM天然对小空间偏移鲁棒，因为它基于局部窗口统计
+
+    Args:
+        pred: 预测深度图 (H, W)
+        gt: 真值深度图 (H, W)
+        window_size: SSIM窗口大小
+
+    Returns:
+        ssim: 结构相似性指数 (0-1, 越高越好)
+    """
+    from scipy.ndimage import uniform_filter
+
+    C1 = 0.01 ** 2
+    C2 = 0.03 ** 2
+
+    # 归一化到0-1
+    pred_min, pred_max = pred.min(), pred.max()
+    gt_min, gt_max = gt.min(), gt.max()
+    if pred_max - pred_min > 1e-8:
+        pred_n = (pred - pred_min) / (pred_max - pred_min)
+    else:
+        pred_n = pred
+    if gt_max - gt_min > 1e-8:
+        gt_n = (gt - gt_min) / (gt_max - gt_min)
+    else:
+        gt_n = gt
+
+    mu_pred = uniform_filter(pred_n, size=window_size)
+    mu_gt = uniform_filter(gt_n, size=window_size)
+
+    sigma_pred_sq = uniform_filter(pred_n ** 2, size=window_size) - mu_pred ** 2
+    sigma_gt_sq = uniform_filter(gt_n ** 2, size=window_size) - mu_gt ** 2
+    sigma_pred_gt = uniform_filter(pred_n * gt_n, size=window_size) - mu_pred * mu_gt
+
+    # 修正负方差
+    sigma_pred_sq = np.maximum(sigma_pred_sq, 0)
+    sigma_gt_sq = np.maximum(sigma_gt_sq, 0)
+
+    ssim_map = ((2 * mu_pred * mu_gt + C1) * (2 * sigma_pred_gt + C2)) / \
+               ((mu_pred ** 2 + mu_gt ** 2 + C1) * (sigma_pred_sq + sigma_gt_sq + C2))
+
+    ssim_val = np.mean(ssim_map)
+
+    return {
+        'ssim': ssim_val,
+    }
+
+
 # ============== 语义分割指标 ==============
 
 def compute_segmentation_metrics(pred: np.ndarray, gt: np.ndarray,
