@@ -227,12 +227,12 @@ def _worker_sam(camera: str, pairs: List[Tuple[str, str]],
 def _worker_image_metrics(camera: str, pairs: List[Tuple[str, str]],
                           config: Dict, gpu_id: int, save_vis: bool,
                           result_dict: dict):
-    """单GPU图像质量指标worker (PSNR/SSIM/LPIPS)"""
+    """单GPU图像质量指标worker (PSNR/SSIM/LPIPS)，FID在主进程计算"""
     try:
         import torch
         torch.cuda.set_device(gpu_id)
 
-        from image_metrics_eval import ImageMetricsEvaluator, compute_fid_for_camera
+        from image_metrics_eval import ImageMetricsEvaluator
         from utils import load_image
         from tqdm import tqdm
 
@@ -248,21 +248,7 @@ def _worker_image_metrics(camera: str, pairs: List[Tuple[str, str]],
             metrics = evaluator.evaluate_pair(gen_img, gt_img)
             camera_metrics.append(metrics)
 
-        camera_result = aggregate_metrics(camera_metrics)
-
-        # 计算FID（分布级指标），失败不影响其他指标
-        try:
-            root = config['data']['root']
-            gen_dir = os.path.join(root, camera, config['data']['gen_folder'])
-            gt_dir = os.path.join(root, camera, config['data']['gt_folder'])
-            print(f"\n  [GPU:{gpu_id}] {camera} 计算FID...")
-            fid_score = compute_fid_for_camera(gen_dir, gt_dir, device=device)
-            camera_result['fid'] = fid_score
-        except Exception as fid_err:
-            print(f"\n  [GPU:{gpu_id}] {camera} FID计算失败: {fid_err}")
-            camera_result['fid'] = float('nan')
-
-        result_dict[camera] = camera_result
+        result_dict[camera] = aggregate_metrics(camera_metrics)
         print(f"\n  [GPU:{gpu_id}] {camera} 完成!")
 
     except Exception as e:
@@ -411,6 +397,26 @@ def evaluate_parallel(config: Dict, task: str = "depth",
     # 收集结果
     results = dict(result_dict)
 
+    # image_metrics任务：在主进程顺序计算FID（clean-fid要求cuda:0）
+    if task == 'image_metrics':
+        from image_metrics_eval import compute_fid_for_camera
+        root = config['data']['root']
+        print(f"\n在主进程计算FID (cuda:0)...")
+        for camera in cameras:
+            if camera in results and results[camera]:
+                gen_dir = os.path.join(root, camera, config['data']['gen_folder'])
+                gt_dir = os.path.join(root, camera, config['data']['gt_folder'])
+                try:
+                    print(f"  计算FID: {camera}")
+                    fid_score = compute_fid_for_camera(gen_dir, gt_dir, device='cuda:0')
+                    results[camera] = dict(results[camera])
+                    results[camera]['fid'] = fid_score
+                    print(f"    FID = {fid_score:.2f}")
+                except Exception as e:
+                    print(f"    FID失败: {e}")
+                    results[camera] = dict(results[camera])
+                    results[camera]['fid'] = float('nan')
+
     # 计算总体平均
     all_metrics = []
     for camera_results in results.values():
@@ -423,7 +429,8 @@ def evaluate_parallel(config: Dict, task: str = "depth",
         results['overall'] = aggregate_metrics(all_metrics)
 
     # 打印结果
-    task_name = {'depth': '深度', 'seg': '分割', 'segmentation': '分割', 'sam': 'SAM结构'}
+    task_name = {'depth': '深度', 'seg': '分割', 'segmentation': '分割', 'sam': 'SAM结构',
+                 'image_metrics': '图像质量'}
     print(f"\n{'=' * 60}")
     print(f"总体{task_name.get(task, task)}评测结果:")
     if 'overall' in results:
