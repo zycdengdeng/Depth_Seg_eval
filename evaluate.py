@@ -198,12 +198,25 @@ def main():
         "--output-dir", type=str, default=None,
         help="输出目录 (覆盖配置文件中的设置)"
     )
+    parser.add_argument(
+        "--parallel", action="store_true",
+        help="启用多GPU并行评测（每个相机分配到不同GPU）"
+    )
+    parser.add_argument(
+        "--gpus", type=str, default=None,
+        help="指定使用的GPU ID，逗号分隔（如: 0,1,2,3）。默认使用所有可用GPU"
+    )
 
     args = parser.parse_args()
 
     # 加载配置
     print(f"加载配置文件: {args.config}")
     config = load_config(args.config)
+
+    # 解析GPU列表
+    gpu_ids = None
+    if args.gpus:
+        gpu_ids = [int(x.strip()) for x in args.gpus.split(',')]
 
     # 覆盖输出目录
     if args.output_dir:
@@ -221,53 +234,51 @@ def main():
     sam_results = None
     save_vis = not args.no_vis
 
-    if args.task in ["all", "depth"]:
-        print("\n" + "=" * 70)
-        print("开始深度一致性评测...")
+    def _run_task(task_name, run_fn, run_parallel_task=None):
+        """运行单个评测任务（支持串行/并行）"""
+        label = {'depth': '深度一致性', 'seg': '语义分割一致性',
+                 'segmentation': '语义分割一致性', 'sam': 'SAM结构一致性'}
+        print(f"\n{'=' * 70}")
+        print(f"开始{label.get(task_name, task_name)}评测...")
+        if args.parallel:
+            print(f"  模式: 多GPU并行 (GPUs: {gpu_ids or 'auto'})")
         print("=" * 70)
         try:
-            depth_results = run_depth_evaluation(config, save_vis=save_vis)
-            # 保存深度结果
+            if args.parallel:
+                from parallel_eval import evaluate_parallel
+                return evaluate_parallel(config, task=task_name,
+                                        gpu_ids=gpu_ids, save_vis=save_vis)
+            else:
+                return run_fn(config, save_vis=save_vis)
+        except Exception as e:
+            print(f"{label.get(task_name, task_name)}评测出错: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    if args.task in ["all", "depth"]:
+        depth_results = _run_task("depth", run_depth_evaluation)
+        if depth_results:
             depth_output = os.path.join(config['output']['metrics'], 'depth_results.json')
             with open(depth_output, 'w') as f:
                 json.dump(convert_to_serializable(depth_results), f, indent=2)
             print(f"深度评测结果已保存到: {depth_output}")
-        except Exception as e:
-            print(f"深度评测出错: {e}")
-            import traceback
-            traceback.print_exc()
 
     if args.task in ["all", "segmentation", "seg"]:
-        print("\n" + "=" * 70)
-        print("开始语义分割一致性评测...")
-        print("=" * 70)
-        try:
-            seg_results = run_segmentation_evaluation(config, save_vis=save_vis)
-            # 保存分割结果
+        seg_results = _run_task("seg", run_segmentation_evaluation)
+        if seg_results:
             seg_output = os.path.join(config['output']['metrics'], 'seg_results.json')
             with open(seg_output, 'w') as f:
                 json.dump(convert_to_serializable(seg_results), f, indent=2)
             print(f"分割评测结果已保存到: {seg_output}")
-        except Exception as e:
-            print(f"分割评测出错: {e}")
-            import traceback
-            traceback.print_exc()
 
     if args.task in ["all", "sam"]:
-        print("\n" + "=" * 70)
-        print("开始SAM结构一致性评测...")
-        print("=" * 70)
-        try:
-            sam_results = run_sam_evaluation(config, save_vis=save_vis)
-            # 保存SAM结果
+        sam_results = _run_task("sam", run_sam_evaluation)
+        if sam_results:
             sam_output = os.path.join(config['output']['metrics'], 'sam_results.json')
             with open(sam_output, 'w') as f:
                 json.dump(convert_to_serializable(sam_results), f, indent=2)
             print(f"SAM评测结果已保存到: {sam_output}")
-        except Exception as e:
-            print(f"SAM评测出错: {e}")
-            import traceback
-            traceback.print_exc()
 
     # 生成综合报告
     if depth_results or seg_results or sam_results:
