@@ -29,8 +29,10 @@ from utils import (
     save_segmentation_visualization, get_cityscapes_palette, CITYSCAPES_CLASSES
 )
 from metrics import (
-    compute_segmentation_metrics, compute_segmentation_consistency,
-    aggregate_metrics, format_metrics_table
+    compute_segmentation_metrics, compute_segmentation_metrics_multilevel,
+    compute_segmentation_consistency,
+    aggregate_metrics, format_metrics_table,
+    CITYSCAPES_COARSE_CLASSES
 )
 
 
@@ -285,10 +287,12 @@ def evaluate_segmentation_consistency(config: Dict,
             # 计算一致性指标
             consistency = compute_segmentation_consistency(seg_gen, seg_gt)
 
-            # 计算分割指标（将seg_gt作为"真值"）
-            seg_metrics = compute_segmentation_metrics(
+            # 计算分割指标（将seg_gt作为"真值"），同时计算超类指标
+            compute_coarse = config.get('segmentation', {}).get('class_merging', {}).get('enabled', True)
+            seg_metrics = compute_segmentation_metrics_multilevel(
                 seg_gen, seg_gt,
-                num_classes=segmentor.num_classes
+                num_classes=segmentor.num_classes,
+                compute_coarse=compute_coarse
             )
 
             metrics = {**consistency, **seg_metrics}
@@ -315,9 +319,16 @@ def evaluate_segmentation_consistency(config: Dict,
         print(format_metrics_table(results[camera]))
 
         if 'class_iou' in results[camera]:
-            print(f"\n  每类IoU (gen vs gt):")
+            print(f"\n  每类IoU (gen vs gt) - 19类细粒度:")
             class_iou = results[camera]['class_iou']
             for i, (cls_name, iou) in enumerate(zip(CITYSCAPES_CLASSES, class_iou)):
+                if not np.isnan(iou):
+                    print(f"    {cls_name:<15}: {iou:6.2f}%")
+
+        if 'coarse_class_iou' in results[camera]:
+            print(f"\n  每类IoU (gen vs gt) - 7类超类:")
+            coarse_iou = results[camera]['coarse_class_iou']
+            for cls_name, iou in zip(CITYSCAPES_COARSE_CLASSES, coarse_iou):
                 if not np.isnan(iou):
                     print(f"    {cls_name:<15}: {iou:6.2f}%")
 
@@ -325,7 +336,7 @@ def evaluate_segmentation_consistency(config: Dict,
     all_metrics = []
     for camera_results in results.values():
         all_metrics.append({k: v for k, v in camera_results.items()
-                          if not k.endswith('_std') and k != 'class_iou'})
+                          if not k.endswith('_std') and k not in ('class_iou', 'coarse_class_iou')})
     results['overall'] = aggregate_metrics(all_metrics)
 
     print("\n" + "=" * 60)

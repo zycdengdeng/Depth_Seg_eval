@@ -103,13 +103,14 @@ def generate_report(depth_results: Optional[Dict],
         report.append("-" * 50)
         report.append("评测指标说明:")
         report.append("  - consistency: 分割结果一致率 (越高越好)")
-        report.append("  - miou: 平均交并比 (越高越好)")
+        report.append("  - miou: 19类细粒度平均交并比 (越高越好)")
+        report.append("  - coarse_miou: 7类超类平均交并比 (越高越好)")
         report.append("  - pixel_acc: 像素准确率 (越高越好)")
         report.append("-" * 50)
 
         if 'overall' in seg_results:
             overall = seg_results['overall']
-            report.append("\n总体结果:")
+            report.append("\n总体结果 (19类细粒度):")
             for key in ['consistency', 'miou', 'pixel_acc', 'fwiou']:
                 if key in overall:
                     value = overall[key]
@@ -119,13 +120,24 @@ def generate_report(depth_results: Optional[Dict],
                     else:
                         report.append(f"  {key:<12}: {value:.2f}%")
 
+            if 'coarse_miou' in overall:
+                report.append("\n总体结果 (7类超类):")
+                for key in ['coarse_miou', 'coarse_pixel_acc', 'coarse_fwiou']:
+                    if key in overall:
+                        value = overall[key]
+                        std_key = f'{key}_std'
+                        if std_key in overall:
+                            report.append(f"  {key:<16}: {value:.2f}% ± {overall[std_key]:.2f}%")
+                        else:
+                            report.append(f"  {key:<16}: {value:.2f}%")
+
         report.append("\n各相机结果:")
         for camera, results in seg_results.items():
             if camera != 'overall':
                 report.append(f"\n  [{camera}]")
-                for key in ['consistency', 'miou']:
+                for key in ['consistency', 'miou', 'coarse_miou']:
                     if key in results:
-                        report.append(f"    {key:<12}: {results[key]:.2f}%")
+                        report.append(f"    {key:<16}: {results[key]:.2f}%")
 
     if sam_results:
         report.append("\n\n## SAM 结构一致性评测")

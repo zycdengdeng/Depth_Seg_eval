@@ -29,10 +29,15 @@ depth:
 
 # 语义分割模型配置
 segmentation:
-  model: "mask2former"  # 可选: mask2former, segformer, internimage
-  backbone: "swin-l"  # Cityscapes预训练
-  dataset: "cityscapes"  # 使用cityscapes类别映射
+  model: "mask2former"  # 可选: mask2former, segformer, oneformer
+  backbone: "swin-l"  # Cityscapes预训练 (mask2former用)
+  model_size: "b5"  # segformer用: b0-b5
+  dataset: "cityscapes"  # oneformer用: cityscapes, ade20k, coco
   device: "cuda"
+  # 类别合并：将19个Cityscapes细粒度类合并为7个超类
+  # flat(路面), construction(建筑), object(设施), nature(自然), sky(天空), human(行人), vehicle(车辆)
+  class_merging:
+    enabled: true  # 是否启用超类指标（同时保留细粒度指标）
 
 # 评测指标
 metrics:

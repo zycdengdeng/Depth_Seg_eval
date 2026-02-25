@@ -118,7 +118,7 @@ def _worker_seg(camera: str, pairs: List[Tuple[str, str]],
         from seg_eval import get_segmentor
         from utils import (load_image, save_segmentation_visualization,
                           get_cityscapes_palette, ensure_dir)
-        from metrics import (compute_segmentation_metrics,
+        from metrics import (compute_segmentation_metrics_multilevel,
                             compute_segmentation_consistency)
         from tqdm import tqdm
 
@@ -144,8 +144,10 @@ def _worker_seg(camera: str, pairs: List[Tuple[str, str]],
             seg_gt = segmentor.predict(gt_img)
 
             consistency = compute_segmentation_consistency(seg_gen, seg_gt)
-            seg_metrics = compute_segmentation_metrics(
-                seg_gen, seg_gt, num_classes=segmentor.num_classes
+            compute_coarse = worker_config.get('segmentation', {}).get('class_merging', {}).get('enabled', True)
+            seg_metrics = compute_segmentation_metrics_multilevel(
+                seg_gen, seg_gt, num_classes=segmentor.num_classes,
+                compute_coarse=compute_coarse
             )
             metrics = {**consistency, **seg_metrics}
             camera_metrics.append(metrics)

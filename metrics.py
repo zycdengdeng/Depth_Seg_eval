@@ -161,6 +161,96 @@ def compute_depth_ssim(pred: np.ndarray, gt: np.ndarray,
     }
 
 
+# ============== Cityscapes 超类映射 ==============
+
+# 19个细粒度类 -> 7个超类（官方Cityscapes分类层级）
+CITYSCAPES_COARSE_MAP = {
+    0: 0,   # road -> flat
+    1: 0,   # sidewalk -> flat
+    2: 1,   # building -> construction
+    3: 1,   # wall -> construction
+    4: 1,   # fence -> construction
+    5: 2,   # pole -> object
+    6: 2,   # traffic_light -> object
+    7: 2,   # traffic_sign -> object
+    8: 3,   # vegetation -> nature
+    9: 3,   # terrain -> nature
+    10: 4,  # sky -> sky
+    11: 5,  # person -> human
+    12: 5,  # rider -> human
+    13: 6,  # car -> vehicle
+    14: 6,  # truck -> vehicle
+    15: 6,  # bus -> vehicle
+    16: 6,  # train -> vehicle
+    17: 6,  # motorcycle -> vehicle
+    18: 6,  # bicycle -> vehicle
+}
+
+CITYSCAPES_COARSE_CLASSES = [
+    'flat', 'construction', 'object', 'nature', 'sky', 'human', 'vehicle'
+]
+
+NUM_COARSE_CLASSES = 7
+
+
+def remap_to_coarse(seg: np.ndarray, ignore_index: int = 255) -> np.ndarray:
+    """
+    将19类细粒度分割图重映射为7类超类分割图
+
+    Args:
+        seg: 分割图 (H, W)，类别ID 0-18
+        ignore_index: 无效像素值
+
+    Returns:
+        coarse_seg: 超类分割图 (H, W)，类别ID 0-6
+    """
+    lut = np.full(256, ignore_index, dtype=np.int64)
+    for fine_id, coarse_id in CITYSCAPES_COARSE_MAP.items():
+        lut[fine_id] = coarse_id
+
+    safe_seg = np.clip(seg, 0, 255).astype(np.int64)
+    return lut[safe_seg]
+
+
+def compute_segmentation_metrics_multilevel(
+    pred: np.ndarray, gt: np.ndarray,
+    num_classes: int = 19,
+    ignore_index: int = 255,
+    compute_coarse: bool = True
+) -> Dict[str, float]:
+    """
+    同时计算细粒度(19类)和超类(7类)的分割指标
+
+    Args:
+        pred: 预测分割图 (H, W)
+        gt: 真值分割图 (H, W)
+        num_classes: 细粒度类别数
+        ignore_index: 忽略的标签值
+        compute_coarse: 是否计算超类指标
+
+    Returns:
+        包含细粒度和超类指标的字典
+    """
+    fine_metrics = compute_segmentation_metrics(pred, gt, num_classes, ignore_index)
+
+    if not compute_coarse:
+        return fine_metrics
+
+    pred_coarse = remap_to_coarse(pred, ignore_index=ignore_index)
+    gt_coarse = remap_to_coarse(gt, ignore_index=ignore_index)
+    coarse_metrics = compute_segmentation_metrics(
+        pred_coarse, gt_coarse,
+        num_classes=NUM_COARSE_CLASSES,
+        ignore_index=ignore_index
+    )
+
+    result = dict(fine_metrics)
+    for key, value in coarse_metrics.items():
+        result[f'coarse_{key}'] = value
+
+    return result
+
+
 # ============== 语义分割指标 ==============
 
 def compute_segmentation_metrics(pred: np.ndarray, gt: np.ndarray,
@@ -316,7 +406,7 @@ def format_metrics_table(metrics: Dict[str, float],
     lines.append("-" * 50)
 
     for name in metric_names:
-        if name in metrics and not name.endswith('_std') and name != 'class_iou':
+        if name in metrics and not name.endswith('_std') and name not in ('class_iou', 'coarse_class_iou'):
             value = metrics[name]
             std_key = f'{name}_std'
             if std_key in metrics:
