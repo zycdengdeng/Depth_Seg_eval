@@ -2,12 +2,15 @@
 
 # 数据路径
 data:
-  root: "/mnt/zihanw/Output_R2V_world_foundation_model_v1/inference/_eval_frames"
+  root: "/mnt/zyc_wzh/inference/_eval_frames"
   cameras:
     - "cross_left_120fov"
     - "cross_right_120fov"
     - "front_tele_30fov"
     - "front_wide_120fov"
+    - "rear_left_70fov"
+    - "rear_right_70fov"
+    - "rear_tele_30fov"
   gen_folder: "gen"
   gt_folder: "gt"
 
