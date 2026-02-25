@@ -63,11 +63,18 @@ def run_image_metrics_evaluation(config: Dict, save_vis: bool = False) -> Dict:
     return evaluate_image_metrics(config, save_vis=save_vis)
 
 
+def run_fvd_evaluation(config: Dict, save_vis: bool = False) -> Dict:
+    """运行FVD评测 (Fréchet Video Distance)"""
+    from fvd_eval import evaluate_fvd
+    return evaluate_fvd(config, save_vis=save_vis)
+
+
 def generate_report(depth_results: Optional[Dict],
                     seg_results: Optional[Dict],
                     output_path: str,
                     sam_results: Optional[Dict] = None,
-                    image_metrics_results: Optional[Dict] = None):
+                    image_metrics_results: Optional[Dict] = None,
+                    fvd_results: Optional[Dict] = None):
     """生成综合评测报告"""
     report = []
     report.append("=" * 70)
@@ -227,6 +234,25 @@ def generate_report(depth_results: Optional[Dict],
                         else:
                             report.append(f"    {key:<12}: {results[key]:.4f}")
 
+    if fvd_results:
+        report.append("\n\n## FVD (Fréchet Video Distance) 评测")
+        report.append("-" * 50)
+        report.append("评测指标说明:")
+        report.append("  - FVD: 视频Fréchet距离 (越低越好)")
+        report.append("  使用I3D (Kinetics-400) 提取时序特征")
+        report.append("-" * 50)
+
+        if 'overall' in fvd_results:
+            overall = fvd_results['overall']
+            fvd_val = overall.get('fvd', float('nan'))
+            fvd_std = overall.get('fvd_std', 0)
+            report.append(f"\n总体FVD: {fvd_val:.2f} ± {fvd_std:.2f}")
+
+        report.append("\n各相机结果:")
+        for camera, camera_res in fvd_results.items():
+            if camera != 'overall' and 'fvd' in camera_res:
+                report.append(f"  [{camera}] FVD = {camera_res['fvd']:.2f}")
+
     report.append("\n" + "=" * 70)
     report.append("评测完成")
     report.append("=" * 70)
@@ -250,8 +276,8 @@ def main():
     )
     parser.add_argument(
         "--task", type=str, default="all",
-        choices=["all", "depth", "segmentation", "seg", "sam", "image_metrics"],
-        help="评测任务: all(全部), depth(深度), seg(语义分割), sam(SAM结构), image_metrics(PSNR/SSIM/LPIPS/FID)"
+        choices=["all", "depth", "segmentation", "seg", "sam", "image_metrics", "fvd"],
+        help="评测任务: all(全部), depth(深度), seg(分割), sam(SAM), image_metrics(PSNR/SSIM/LPIPS/FID), fvd(视频距离)"
     )
     parser.add_argument(
         "--no-vis", action="store_true",
@@ -296,13 +322,15 @@ def main():
     seg_results = None
     sam_results = None
     image_metrics_results = None
+    fvd_results = None
     save_vis = not args.no_vis
 
     def _run_task(task_name, run_fn, run_parallel_task=None):
         """运行单个评测任务（支持串行/并行）"""
         label = {'depth': '深度一致性', 'seg': '语义分割一致性',
                  'segmentation': '语义分割一致性', 'sam': 'SAM结构一致性',
-                 'image_metrics': '图像质量(PSNR/SSIM/LPIPS/FID)'}
+                 'image_metrics': '图像质量(PSNR/SSIM/LPIPS/FID)',
+                 'fvd': 'FVD(视频Fréchet距离)'}
         print(f"\n{'=' * 70}")
         print(f"开始{label.get(task_name, task_name)}评测...")
         if args.parallel:
@@ -353,12 +381,22 @@ def main():
                 json.dump(convert_to_serializable(image_metrics_results), f, indent=2)
             print(f"图像质量评测结果已保存到: {im_output}")
 
+    if args.task in ["all", "fvd"]:
+        # FVD不支持parallel模式（必须在cuda:0上跑I3D），直接串行
+        fvd_results = _run_task("fvd", run_fvd_evaluation)
+        if fvd_results:
+            fvd_output = os.path.join(config['output']['metrics'], 'fvd_results.json')
+            with open(fvd_output, 'w') as f:
+                json.dump(convert_to_serializable(fvd_results), f, indent=2)
+            print(f"FVD评测结果已保存到: {fvd_output}")
+
     # 生成综合报告
-    if depth_results or seg_results or sam_results or image_metrics_results:
+    if depth_results or seg_results or sam_results or image_metrics_results or fvd_results:
         report_path = os.path.join(config['output']['metrics'], 'evaluation_report.txt')
         generate_report(depth_results, seg_results, report_path,
                        sam_results=sam_results,
-                       image_metrics_results=image_metrics_results)
+                       image_metrics_results=image_metrics_results,
+                       fvd_results=fvd_results)
         print(f"\n综合报告已保存到: {report_path}")
 
         # 保存完整JSON结果
@@ -368,7 +406,8 @@ def main():
             'depth': depth_results,
             'segmentation': seg_results,
             'sam': sam_results,
-            'image_metrics': image_metrics_results
+            'image_metrics': image_metrics_results,
+            'fvd': fvd_results
         }
         full_output = os.path.join(config['output']['metrics'], 'full_results.json')
         with open(full_output, 'w') as f:
