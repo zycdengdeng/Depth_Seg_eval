@@ -382,8 +382,18 @@ def main():
             print(f"图像质量评测结果已保存到: {im_output}")
 
     if args.task in ["all", "fvd"]:
-        # FVD不支持parallel模式（必须在cuda:0上跑I3D），直接串行
-        fvd_results = _run_task("fvd", run_fvd_evaluation)
+        # FVD必须在cuda:0上跑I3D，强制串行（不走parallel）
+        print(f"\n{'=' * 70}")
+        print("开始FVD(视频Fréchet距离)评测...")
+        print("  模式: 串行 (I3D要求cuda:0)")
+        print("=" * 70)
+        try:
+            fvd_results = run_fvd_evaluation(config, save_vis=save_vis)
+        except Exception as e:
+            print(f"FVD评测出错: {e}")
+            import traceback
+            traceback.print_exc()
+            fvd_results = None
         if fvd_results:
             fvd_output = os.path.join(config['output']['metrics'], 'fvd_results.json')
             with open(fvd_output, 'w') as f:
