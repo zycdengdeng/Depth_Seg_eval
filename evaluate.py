@@ -400,9 +400,32 @@ def main():
                 json.dump(convert_to_serializable(fvd_results), f, indent=2)
             print(f"FVD评测结果已保存到: {fvd_output}")
 
-    # 生成综合报告
+    # 生成综合报告（自动加载已有的其他任务结果，避免覆盖丢失）
+    metrics_dir = config['output']['metrics']
+
+    def _load_existing(filename, current_result):
+        """如果当前任务没跑，尝试从已有JSON加载"""
+        if current_result is not None:
+            return current_result
+        path = os.path.join(metrics_dir, filename)
+        if os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                print(f"  已加载历史结果: {filename}")
+                return data
+            except Exception:
+                pass
+        return None
+
+    depth_results = _load_existing('depth_results.json', depth_results)
+    seg_results = _load_existing('seg_results.json', seg_results)
+    sam_results = _load_existing('sam_results.json', sam_results)
+    image_metrics_results = _load_existing('image_metrics_results.json', image_metrics_results)
+    fvd_results = _load_existing('fvd_results.json', fvd_results)
+
     if depth_results or seg_results or sam_results or image_metrics_results or fvd_results:
-        report_path = os.path.join(config['output']['metrics'], 'evaluation_report.txt')
+        report_path = os.path.join(metrics_dir, 'evaluation_report.txt')
         generate_report(depth_results, seg_results, report_path,
                        sam_results=sam_results,
                        image_metrics_results=image_metrics_results,
@@ -419,7 +442,7 @@ def main():
             'image_metrics': image_metrics_results,
             'fvd': fvd_results
         }
-        full_output = os.path.join(config['output']['metrics'], 'full_results.json')
+        full_output = os.path.join(metrics_dir, 'full_results.json')
         with open(full_output, 'w') as f:
             json.dump(convert_to_serializable(full_results), f, indent=2)
         print(f"完整结果已保存到: {full_output}")
