@@ -35,6 +35,58 @@ from metrics import (
     CITYSCAPES_COARSE_CLASSES
 )
 
+# Cityscapes 类别ID
+BUILDING_CLASS_ID = 2
+CAR_CLASS_ID = 13
+
+
+def apply_ego_vehicle_mask(seg: np.ndarray, camera: str, config: Dict) -> np.ndarray:
+    """
+    对分割结果应用自车车身mask处理
+
+    在自车车身区域（图像边缘），将 building 重映射为 car，
+    因为 Mask2Former 会把自车车身误分类为 building。
+
+    Args:
+        seg: 分割图 (H, W)
+        camera: 相机名称
+        config: 配置字典
+
+    Returns:
+        处理后的分割图
+    """
+    ego_config = config.get('segmentation', {}).get('ego_vehicle_mask', {})
+
+    if not ego_config.get('enabled', False):
+        return seg
+
+    cameras_config = ego_config.get('cameras', {})
+    if camera not in cameras_config:
+        return seg
+
+    cam_config = cameras_config[camera]
+    edge = cam_config.get('edge', 'left')
+    ratio = cam_config.get('ratio', 0.15)
+
+    H, W = seg.shape
+    seg_out = seg.copy()
+
+    # 计算mask区域
+    edge_width = int(W * ratio)
+
+    if edge == 'left':
+        # 左边缘：将 building 重映射为 car
+        mask_region = seg_out[:, :edge_width]
+        mask_region[mask_region == BUILDING_CLASS_ID] = CAR_CLASS_ID
+        seg_out[:, :edge_width] = mask_region
+    elif edge == 'right':
+        # 右边缘：将 building 重映射为 car
+        mask_region = seg_out[:, -edge_width:]
+        mask_region[mask_region == BUILDING_CLASS_ID] = CAR_CLASS_ID
+        seg_out[:, -edge_width:] = mask_region
+
+    return seg_out
+
 
 class SemanticSegmentor:
     """语义分割器基类"""
@@ -283,6 +335,10 @@ def evaluate_segmentation_consistency(config: Dict,
             # 语义分割
             seg_gen = segmentor.predict(gen_img)
             seg_gt = segmentor.predict(gt_img)
+
+            # 应用自车车身mask处理（边缘区域 building -> car）
+            seg_gen = apply_ego_vehicle_mask(seg_gen, camera, config)
+            seg_gt = apply_ego_vehicle_mask(seg_gt, camera, config)
 
             # 计算一致性指标
             consistency = compute_segmentation_consistency(seg_gen, seg_gt)

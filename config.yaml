@@ -39,6 +39,19 @@ segmentation:
   class_merging:
     enabled: true  # 是否启用超类指标（同时保留细粒度指标）
 
+  # 自车车身处理：部分相机边缘会出现自车车身，被Mask2Former误分类为building
+  # 这里配置各相机的自车区域，评测时将这些区域的building重映射为car
+  ego_vehicle_mask:
+    enabled: true
+    # 各相机的自车区域配置 (edge: left/right, ratio: 占图像宽度的比例)
+    cameras:
+      rear_left_70fov:
+        edge: "left"
+        ratio: 0.15  # 左边15%
+      rear_right_70fov:
+        edge: "right"
+        ratio: 0.15  # 右边15%
+
 # 评测指标
 metrics:
   depth:

@@ -115,7 +115,7 @@ def _worker_seg(camera: str, pairs: List[Tuple[str, str]],
         import torch
         torch.cuda.set_device(gpu_id)
 
-        from seg_eval import get_segmentor
+        from seg_eval import get_segmentor, apply_ego_vehicle_mask
         from utils import (load_image, save_segmentation_visualization,
                           get_cityscapes_palette, ensure_dir)
         from metrics import (compute_segmentation_metrics_multilevel,
@@ -142,6 +142,10 @@ def _worker_seg(camera: str, pairs: List[Tuple[str, str]],
 
             seg_gen = segmentor.predict(gen_img)
             seg_gt = segmentor.predict(gt_img)
+
+            # 应用自车车身mask处理（边缘区域 building -> car）
+            seg_gen = apply_ego_vehicle_mask(seg_gen, camera, config)
+            seg_gt = apply_ego_vehicle_mask(seg_gt, camera, config)
 
             consistency = compute_segmentation_consistency(seg_gen, seg_gt)
             compute_coarse = worker_config.get('segmentation', {}).get('class_merging', {}).get('enabled', True)
