@@ -41,8 +41,9 @@ segmentation:
 
   # 自车车身处理：部分相机边缘会出现自车车身，被Mask2Former误分类为building
   # 这里配置各相机的自车区域，评测时将这些区域的building重映射为car
+  # 注：经测试影响很小，默认禁用
   ego_vehicle_mask:
-    enabled: true
+    enabled: false
     # 各相机的自车区域配置 (edge: left/right, ratio: 占图像宽度的比例)
     cameras:
       rear_left_70fov:
