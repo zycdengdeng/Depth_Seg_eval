@@ -275,8 +275,17 @@ def evaluate_fvd_mp4(config: Dict) -> Dict:
 # ============== 并行评测 ==============
 
 def _worker_wrapper(task_fn, camera, video_pairs, config, gpu_id, save_vis, result_dict):
-    """Worker包装器"""
+    """Worker包装器，确保子进程正确初始化CUDA设备"""
     try:
+        # 验证子进程中CUDA设备可用性
+        if not torch.cuda.is_available():
+            raise RuntimeError("子进程中CUDA不可用，请检查PyTorch安装和CUDA_VISIBLE_DEVICES设置")
+        num_devices = torch.cuda.device_count()
+        if gpu_id >= num_devices:
+            raise RuntimeError(
+                f"GPU {gpu_id} 超出子进程可见设备数量 {num_devices} "
+                f"(CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '未设置')})")
+
         result = task_fn(config, camera, video_pairs, gpu_id, save_vis)
         result_dict[camera] = result
         print(f"\n  [GPU:{gpu_id}] {camera} 完成!")
@@ -378,36 +387,32 @@ def evaluate_parallel_mp4(config: Dict, task: str,
 
 
 def _preload_models(task: str, config: Dict):
-    """预加载模型到缓存"""
+    """预下载模型文件到本地缓存（不实例化PyTorch模型，避免版本兼容问题）"""
+    from huggingface_hub import snapshot_download
     print("预下载模型到缓存...")
 
-    if task == 'depth':
-        from transformers import AutoModelForDepthEstimation, AutoImageProcessor
-        model_name = "depth-anything/Depth-Anything-V2-Large-hf"
-        print(f"  预加载 Depth Anything V2: {model_name}")
-        AutoImageProcessor.from_pretrained(model_name, use_fast=False)
-        AutoModelForDepthEstimation.from_pretrained(model_name)
+    try:
+        if task == 'depth':
+            model_name = "depth-anything/Depth-Anything-V2-Large-hf"
+            print(f"  预下载 Depth Anything V2: {model_name}")
+            snapshot_download(model_name)
 
-    elif task in ['seg', 'segmentation']:
-        from transformers import Mask2FormerForUniversalSegmentation, AutoImageProcessor
-        model_name = "facebook/mask2former-swin-large-cityscapes-semantic"
-        print(f"  预加载 Mask2Former: {model_name}")
-        AutoImageProcessor.from_pretrained(model_name, use_fast=False)
-        Mask2FormerForUniversalSegmentation.from_pretrained(model_name)
+        elif task in ['seg', 'segmentation']:
+            model_name = "facebook/mask2former-swin-large-cityscapes-semantic"
+            print(f"  预下载 Mask2Former: {model_name}")
+            snapshot_download(model_name)
 
-    elif task == 'sam':
-        from transformers import SamModel, SamProcessor
-        model_name = "facebook/sam-vit-large"
-        print(f"  预加载 SAM: {model_name}")
-        SamProcessor.from_pretrained(model_name, use_fast=False)
-        SamModel.from_pretrained(model_name)
+        elif task == 'sam':
+            model_name = "facebook/sam-vit-large"
+            print(f"  预下载 SAM: {model_name}")
+            snapshot_download(model_name)
 
-    elif task == 'image_metrics':
-        import lpips
-        print("  预加载 LPIPS (AlexNet)...")
-        _ = lpips.LPIPS(net='alex')
+        elif task == 'image_metrics':
+            print("  LPIPS模型将在各worker中按需加载")
 
-    print("模型缓存就绪!\n")
+        print("模型缓存就绪!\n")
+    except Exception as e:
+        print(f"  模型预下载跳过（将在worker中按需下载）: {e}\n")
 
 
 # ============== 主函数 ==============
@@ -431,10 +436,43 @@ def main():
     print(f"加载配置文件: {args.config}")
     config = load_mp4_config(args.config)
 
-    # 解析GPU
+    # 解析GPU并验证CUDA设备映射
     gpu_ids = None
     if args.gpus:
         gpu_ids = [int(x.strip()) for x in args.gpus.split(',')]
+
+    if gpu_ids is not None and torch.cuda.is_available():
+        num_visible = torch.cuda.device_count()
+        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+
+        # 检查gpu_ids是否超出可见设备范围
+        max_gpu_id = max(gpu_ids)
+        if max_gpu_id >= num_visible:
+            if cuda_visible:
+                visible_list = [int(x.strip()) for x in cuda_visible.split(',')]
+                # 尝试将物理GPU ID映射到逻辑ID
+                remapped = []
+                for gid in gpu_ids:
+                    if gid in visible_list:
+                        logical_id = visible_list.index(gid)
+                        remapped.append(logical_id)
+                    elif gid < num_visible:
+                        remapped.append(gid)
+                    else:
+                        print(f"警告: GPU {gid} 不在可见设备范围内 "
+                              f"(CUDA_VISIBLE_DEVICES={cuda_visible}, "
+                              f"可用逻辑ID: 0-{num_visible-1})")
+                        remapped.append(gid % num_visible)
+                print(f"CUDA设备映射: CUDA_VISIBLE_DEVICES={cuda_visible}")
+                print(f"  --gpus {','.join(map(str, gpu_ids))} -> 逻辑GPU {remapped}")
+                gpu_ids = remapped
+            else:
+                print(f"警告: GPU ID {max_gpu_id} 超出可用设备数量 {num_visible}，"
+                      f"将对设备数量取模")
+                gpu_ids = [gid % num_visible for gid in gpu_ids]
+
+        print(f"使用GPU (逻辑ID): {gpu_ids} "
+              f"(共 {num_visible} 个可见CUDA设备)")
 
     # 确保输出目录存在
     ensure_dir(config['output']['metrics'])
