@@ -263,54 +263,46 @@ def _worker_image_metrics(camera: str, pairs: List[Tuple[str, str]],
 
 def _preload_models(task: str, config: Dict):
     """
-    在主进程中预下载模型到缓存，避免多进程同时下载导致冲突
-
-    Args:
-        task: 评测任务类型
-        config: 配置字典
+    在主进程中预下载模型文件到缓存，避免多进程同时下载导致冲突。
+    仅下载文件，不实例化PyTorch模型，避免transformers/PyTorch版本兼容问题。
     """
+    from huggingface_hub import snapshot_download
     print("预下载模型到缓存...")
 
-    if task == 'depth':
-        from transformers import AutoModelForDepthEstimation, AutoImageProcessor
-        model_mapping = {
-            "small": "depth-anything/Depth-Anything-V2-Small-hf",
-            "base": "depth-anything/Depth-Anything-V2-Base-hf",
-            "large": "depth-anything/Depth-Anything-V2-Large-hf",
-        }
-        model_size = config.get('depth', {}).get('model_size', 'large')
-        model_name = model_mapping.get(model_size, model_mapping["large"])
-        print(f"  预加载 Depth Anything V2: {model_name}")
-        AutoImageProcessor.from_pretrained(model_name, use_fast=False)
-        AutoModelForDepthEstimation.from_pretrained(model_name)
+    try:
+        if task == 'depth':
+            model_mapping = {
+                "small": "depth-anything/Depth-Anything-V2-Small-hf",
+                "base": "depth-anything/Depth-Anything-V2-Base-hf",
+                "large": "depth-anything/Depth-Anything-V2-Large-hf",
+            }
+            model_size = config.get('depth', {}).get('model_size', 'large')
+            model_name = model_mapping.get(model_size, model_mapping["large"])
+            print(f"  预下载 Depth Anything V2: {model_name}")
+            snapshot_download(model_name)
 
-    elif task in ['seg', 'segmentation']:
-        from transformers import Mask2FormerForUniversalSegmentation, AutoImageProcessor
-        model_name = "facebook/mask2former-swin-large-cityscapes-semantic"
-        print(f"  预加载 Mask2Former: {model_name}")
-        AutoImageProcessor.from_pretrained(model_name, use_fast=False)
-        Mask2FormerForUniversalSegmentation.from_pretrained(model_name)
+        elif task in ['seg', 'segmentation']:
+            model_name = "facebook/mask2former-swin-large-cityscapes-semantic"
+            print(f"  预下载 Mask2Former: {model_name}")
+            snapshot_download(model_name)
 
-    elif task == 'sam':
-        from transformers import SamModel, SamProcessor
-        model_mapping = {
-            "base": "facebook/sam-vit-base",
-            "large": "facebook/sam-vit-large",
-            "huge": "facebook/sam-vit-huge",
-        }
-        model_size = config.get('sam', {}).get('model_size', 'large')
-        model_name = model_mapping.get(model_size, model_mapping["large"])
-        print(f"  预加载 SAM: {model_name}")
-        SamProcessor.from_pretrained(model_name, use_fast=False)
-        SamModel.from_pretrained(model_name)
+        elif task == 'sam':
+            model_mapping = {
+                "base": "facebook/sam-vit-base",
+                "large": "facebook/sam-vit-large",
+                "huge": "facebook/sam-vit-huge",
+            }
+            model_size = config.get('sam', {}).get('model_size', 'large')
+            model_name = model_mapping.get(model_size, model_mapping["large"])
+            print(f"  预下载 SAM: {model_name}")
+            snapshot_download(model_name)
 
-    elif task == 'image_metrics':
-        import lpips
-        print("  预加载 LPIPS (AlexNet)...")
-        _ = lpips.LPIPS(net='alex')
-        print("  LPIPS 缓存就绪")
+        elif task == 'image_metrics':
+            print("  LPIPS模型将在各worker中按需加载")
 
-    print("模型缓存就绪!\n")
+        print("模型缓存就绪!\n")
+    except Exception as e:
+        print(f"  模型预下载跳过（将在worker中按需下载）: {e}\n")
 
 
 def evaluate_parallel(config: Dict, task: str = "depth",

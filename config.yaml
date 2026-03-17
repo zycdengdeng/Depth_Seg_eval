@@ -2,7 +2,7 @@
 
 # 数据路径
 data:
-  root: "/mnt/zyc_wzh/inference/_eval_frames"
+  root: "/mnt/zyc_wzh/inference_SLAM_output/_eval_frames"
   cameras:
     - "cross_left_120fov"
     - "cross_right_120fov"

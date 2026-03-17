@@ -302,10 +302,40 @@ def main():
     print(f"加载配置文件: {args.config}")
     config = load_config(args.config)
 
-    # 解析GPU列表
+    # 解析GPU列表并验证CUDA设备映射
     gpu_ids = None
     if args.gpus:
         gpu_ids = [int(x.strip()) for x in args.gpus.split(',')]
+
+    if gpu_ids is not None and torch.cuda.is_available():
+        num_visible = torch.cuda.device_count()
+        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+
+        max_gpu_id = max(gpu_ids)
+        if max_gpu_id >= num_visible:
+            if cuda_visible:
+                visible_list = [int(x.strip()) for x in cuda_visible.split(',')]
+                remapped = []
+                for gid in gpu_ids:
+                    if gid in visible_list:
+                        logical_id = visible_list.index(gid)
+                        remapped.append(logical_id)
+                    elif gid < num_visible:
+                        remapped.append(gid)
+                    else:
+                        print(f"警告: GPU {gid} 不在可见设备范围内 "
+                              f"(CUDA_VISIBLE_DEVICES={cuda_visible}, "
+                              f"可用逻辑ID: 0-{num_visible-1})")
+                        remapped.append(gid % num_visible)
+                print(f"CUDA设备映射: CUDA_VISIBLE_DEVICES={cuda_visible}")
+                print(f"  --gpus {','.join(map(str, gpu_ids))} -> 逻辑GPU {remapped}")
+                gpu_ids = remapped
+            else:
+                print(f"警告: GPU ID {max_gpu_id} 超出可用设备数量 {num_visible}，"
+                      f"将对设备数量取模")
+                gpu_ids = [gid % num_visible for gid in gpu_ids]
+
+        print(f"使用GPU (逻辑ID): {gpu_ids} (共 {num_visible} 个可见CUDA设备)")
 
     # 覆盖输出目录
     if args.output_dir:
