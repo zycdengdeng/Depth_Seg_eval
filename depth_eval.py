@@ -72,7 +72,7 @@ class DepthAnythingV2Estimator(DepthEstimator):
             model_name = model_mapping.get(self.model_size.lower(), model_mapping["large"])
             print(f"加载 Depth Anything V2 模型: {model_name}")
 
-            self.processor = AutoImageProcessor.from_pretrained(model_name)
+            self.processor = AutoImageProcessor.from_pretrained(model_name, use_fast=False)
             self.model = AutoModelForDepthEstimation.from_pretrained(model_name)
             self.model.to(self.device)
             self.model.eval()

@@ -281,14 +281,14 @@ def _preload_models(task: str, config: Dict):
         model_size = config.get('depth', {}).get('model_size', 'large')
         model_name = model_mapping.get(model_size, model_mapping["large"])
         print(f"  预加载 Depth Anything V2: {model_name}")
-        AutoImageProcessor.from_pretrained(model_name)
+        AutoImageProcessor.from_pretrained(model_name, use_fast=False)
         AutoModelForDepthEstimation.from_pretrained(model_name)
 
     elif task in ['seg', 'segmentation']:
         from transformers import Mask2FormerForUniversalSegmentation, AutoImageProcessor
         model_name = "facebook/mask2former-swin-large-cityscapes-semantic"
         print(f"  预加载 Mask2Former: {model_name}")
-        AutoImageProcessor.from_pretrained(model_name)
+        AutoImageProcessor.from_pretrained(model_name, use_fast=False)
         Mask2FormerForUniversalSegmentation.from_pretrained(model_name)
 
     elif task == 'sam':
@@ -301,7 +301,7 @@ def _preload_models(task: str, config: Dict):
         model_size = config.get('sam', {}).get('model_size', 'large')
         model_name = model_mapping.get(model_size, model_mapping["large"])
         print(f"  预加载 SAM: {model_name}")
-        SamProcessor.from_pretrained(model_name)
+        SamProcessor.from_pretrained(model_name, use_fast=False)
         SamModel.from_pretrained(model_name)
 
     elif task == 'image_metrics':

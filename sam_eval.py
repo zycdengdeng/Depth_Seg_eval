@@ -52,7 +52,7 @@ class SAMSegmentor:
         model_name = model_mapping.get(self.model_size, model_mapping["large"])
         print(f"加载 SAM 模型: {model_name}")
 
-        self.processor = SamProcessor.from_pretrained(model_name)
+        self.processor = SamProcessor.from_pretrained(model_name, use_fast=False)
         self.model = SamModel.from_pretrained(model_name)
         self.model.to(self.device)
         self.model.eval()
@@ -172,7 +172,7 @@ class SAMSegmentorFast:
         model_name = model_mapping.get(self.model_size, model_mapping["large"])
         print(f"加载 SAM 模型: {model_name}")
 
-        self.processor = SamProcessor.from_pretrained(model_name)
+        self.processor = SamProcessor.from_pretrained(model_name, use_fast=False)
         self.model = SamModel.from_pretrained(model_name)
         self.model.to(self.device)
         self.model.eval()

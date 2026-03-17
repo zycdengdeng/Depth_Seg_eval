@@ -385,21 +385,21 @@ def _preload_models(task: str, config: Dict):
         from transformers import AutoModelForDepthEstimation, AutoImageProcessor
         model_name = "depth-anything/Depth-Anything-V2-Large-hf"
         print(f"  预加载 Depth Anything V2: {model_name}")
-        AutoImageProcessor.from_pretrained(model_name)
+        AutoImageProcessor.from_pretrained(model_name, use_fast=False)
         AutoModelForDepthEstimation.from_pretrained(model_name)
 
     elif task in ['seg', 'segmentation']:
         from transformers import Mask2FormerForUniversalSegmentation, AutoImageProcessor
         model_name = "facebook/mask2former-swin-large-cityscapes-semantic"
         print(f"  预加载 Mask2Former: {model_name}")
-        AutoImageProcessor.from_pretrained(model_name)
+        AutoImageProcessor.from_pretrained(model_name, use_fast=False)
         Mask2FormerForUniversalSegmentation.from_pretrained(model_name)
 
     elif task == 'sam':
         from transformers import SamModel, SamProcessor
         model_name = "facebook/sam-vit-large"
         print(f"  预加载 SAM: {model_name}")
-        SamProcessor.from_pretrained(model_name)
+        SamProcessor.from_pretrained(model_name, use_fast=False)
         SamModel.from_pretrained(model_name)
 
     elif task == 'image_metrics':

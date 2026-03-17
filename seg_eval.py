@@ -127,7 +127,7 @@ class Mask2FormerSegmentor(SemanticSegmentor):
         model_name = model_mapping.get(self.backbone, model_mapping["swin-l"])
         print(f"加载 Mask2Former 模型: {model_name}")
 
-        self.processor = AutoImageProcessor.from_pretrained(model_name)
+        self.processor = AutoImageProcessor.from_pretrained(model_name, use_fast=False)
         self.model = Mask2FormerForUniversalSegmentation.from_pretrained(model_name)
         self.model.to(self.device)
         self.model.eval()
@@ -186,7 +186,7 @@ class SegFormerSegmentor(SemanticSegmentor):
         model_name = model_mapping.get(self.model_size, model_mapping["b5"])
         print(f"加载 SegFormer 模型: {model_name}")
 
-        self.processor = AutoImageProcessor.from_pretrained(model_name)
+        self.processor = AutoImageProcessor.from_pretrained(model_name, use_fast=False)
         self.model = SegformerForSemanticSegmentation.from_pretrained(model_name)
         self.model.to(self.device)
         self.model.eval()
