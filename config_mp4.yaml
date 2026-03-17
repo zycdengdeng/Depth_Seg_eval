@@ -3,7 +3,7 @@
 
 # 数据路径
 data:
-  root: "/mnt/zihanw/inference_SLAM_output"
+  root: "/mnt/zyc_wzh/inference_SLAM_output"
   # MP4数据结构: {root}/{segment}/{camera}_generated.mp4 和 {camera}_gt.mp4
   cameras:
     - "cross_left_120fov"
