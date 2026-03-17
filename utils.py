@@ -12,6 +12,36 @@ from typing import Dict, List, Tuple, Optional
 import torch
 
 
+def safe_import_transformers():
+    """
+    导入transformers，自动绕过huggingface_hub版本元数据损坏的问题。
+    当huggingface_hub的版本号无法被检测到时(found=None)，
+    会跳过transformers的版本兼容性检查。
+    """
+    try:
+        import transformers
+        return transformers
+    except ValueError as e:
+        if "Unable to compare versions" in str(e) and "huggingface" in str(e):
+            import transformers.utils.versions as _tv
+            _orig = _tv.require_version
+
+            def _patched_require_version(requirement, hint=None):
+                try:
+                    return _orig(requirement, hint)
+                except ValueError:
+                    pass
+
+            _tv.require_version = _patched_require_version
+            _tv.require_version_core = _patched_require_version
+
+            import importlib
+            import transformers
+            importlib.reload(transformers)
+            return transformers
+        raise
+
+
 def load_config(config_path: str = "config.yaml") -> Dict:
     """加载配置文件"""
     with open(config_path, 'r') as f:

@@ -26,7 +26,8 @@ import json
 
 from utils import (
     load_config, get_image_pairs, load_image, ensure_dir,
-    save_segmentation_visualization, get_cityscapes_palette, CITYSCAPES_CLASSES
+    save_segmentation_visualization, get_cityscapes_palette, CITYSCAPES_CLASSES,
+    safe_import_transformers
 )
 from metrics import (
     compute_segmentation_metrics, compute_segmentation_metrics_multilevel,
@@ -114,6 +115,7 @@ class Mask2FormerSegmentor(SemanticSegmentor):
 
     def _load_model(self):
         """加载Mask2Former模型"""
+        safe_import_transformers()
         from transformers import AutoImageProcessor, Mask2FormerForUniversalSegmentation
 
         # Cityscapes预训练的Mask2Former模型
@@ -171,6 +173,7 @@ class SegFormerSegmentor(SemanticSegmentor):
 
     def _load_model(self):
         """加载SegFormer模型"""
+        safe_import_transformers()
         from transformers import AutoImageProcessor, SegformerForSemanticSegmentation
 
         # Cityscapes预训练的SegFormer模型
@@ -228,6 +231,7 @@ class OneFormerSegmentor(SemanticSegmentor):
 
     def _load_model(self):
         """加载OneFormer模型"""
+        safe_import_transformers()
         from transformers import AutoProcessor, OneFormerForUniversalSegmentation
 
         model_mapping = {

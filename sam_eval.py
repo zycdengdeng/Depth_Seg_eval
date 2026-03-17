@@ -25,7 +25,7 @@ from typing import Dict, List, Tuple, Optional
 from scipy import ndimage
 import json
 
-from utils import load_config, get_image_pairs, load_image, ensure_dir
+from utils import load_config, get_image_pairs, load_image, ensure_dir, safe_import_transformers
 from metrics import aggregate_metrics, format_metrics_table
 
 
@@ -41,6 +41,7 @@ class SAMSegmentor:
 
     def _load_model(self):
         """加载SAM模型"""
+        safe_import_transformers()
         from transformers import SamModel, SamProcessor
 
         model_mapping = {
@@ -161,6 +162,7 @@ class SAMSegmentorFast:
 
     def _load_model(self):
         """加载SAM模型"""
+        safe_import_transformers()
         from transformers import SamModel, SamProcessor
 
         model_mapping = {

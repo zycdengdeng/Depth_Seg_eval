@@ -22,7 +22,8 @@ import json
 from utils import (
     load_config, get_image_pairs, load_image, ensure_dir,
     normalize_depth, align_depth_scale, align_spatial,
-    compute_tolerant_metrics, save_depth_visualization
+    compute_tolerant_metrics, save_depth_visualization,
+    safe_import_transformers
 )
 from metrics import (
     compute_depth_metrics, compute_depth_correlation, compute_depth_ssim,
@@ -57,6 +58,7 @@ class DepthAnythingV2Estimator(DepthEstimator):
         """加载Depth Anything V2模型"""
         try:
             # 尝试从transformers加载
+            safe_import_transformers()
             from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
             # 正确的HuggingFace模型名称映射
