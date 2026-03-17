@@ -16,30 +16,45 @@ def safe_import_transformers():
     """
     导入transformers，自动绕过huggingface_hub版本元数据损坏的问题。
     当huggingface_hub的版本号无法被检测到时(found=None)，
-    会跳过transformers的版本兼容性检查。
+    先patch版本检查函数，再导入transformers。
     """
     try:
         import transformers
         return transformers
     except ValueError as e:
-        if "Unable to compare versions" in str(e) and "huggingface" in str(e):
-            import transformers.utils.versions as _tv
-            _orig = _tv.require_version
+        if "Unable to compare versions" not in str(e):
+            raise
+        print(f"[safe_import_transformers] 检测到版本检查失败，正在patch...")
+        # 必须在import transformers之前patch，因为transformers/__init__.py
+        # 在模块级别就调用了版本检查
+        import importlib
+        import sys
 
-            def _patched_require_version(requirement, hint=None):
-                try:
-                    return _orig(requirement, hint)
-                except ValueError:
-                    pass
+        # 直接加载versions子模块（不触发transformers/__init__）
+        import importlib.util
+        spec = importlib.util.find_spec("transformers.utils.versions")
+        versions_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(versions_mod)
 
-            _tv.require_version = _patched_require_version
-            _tv.require_version_core = _patched_require_version
+        _orig = versions_mod.require_version
+        def _patched(requirement, hint=None):
+            try:
+                return _orig(requirement, hint)
+            except ValueError:
+                pass
 
-            import importlib
-            import transformers
-            importlib.reload(transformers)
-            return transformers
-        raise
+        versions_mod.require_version = _patched
+        versions_mod.require_version_core = _patched
+        sys.modules["transformers.utils.versions"] = versions_mod
+
+        # 同样patch dependency_versions_check，防止它重新导入versions
+        if "transformers" in sys.modules:
+            del sys.modules["transformers"]
+        if "transformers.dependency_versions_check" in sys.modules:
+            del sys.modules["transformers.dependency_versions_check"]
+
+        import transformers
+        return transformers
 
 
 def load_config(config_path: str = "config.yaml") -> Dict:
