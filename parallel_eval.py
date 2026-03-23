@@ -448,10 +448,10 @@ def _preload_models(task: str, config: Dict):
         print("  YOLO11 缓存就绪")
 
     elif task == 'ntl':
-        print("  预加载 TwinLiteNet (ResNet18 backbone)...")
-        from torchvision.models import resnet18, ResNet18_Weights
-        _ = resnet18(weights=ResNet18_Weights.DEFAULT)
-        print("  TwinLiteNet backbone 缓存就绪")
+        print("  预加载 TwinLiteNet (ESPNet backbone)...")
+        from TwinLite import TwinLiteNet
+        _ = TwinLiteNet(p=2, q=3)
+        print("  TwinLiteNet 模型结构缓存就绪")
 
     print("模型缓存就绪!\n")
 

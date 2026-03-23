@@ -34,11 +34,11 @@ class TwinLiteNetDetector:
     """
     TwinLiteNet 车道线与可行驶区域检测器
 
-    TwinLiteNet 是一个轻量级双任务网络：
-    - 任务1: 可行驶区域分割 (drivable area)
-    - 任务2: 车道线检测 (lane line)
+    使用官方 TwinLiteNet 架构（ESPNet 编码器 + 双解码头），
+    与 https://github.com/chequanghuy/TwinLiteNet 完全一致。
 
-    输出二值 mask，用于计算 NTL-IoU。
+    - 任务1: 可行驶区域分割 (drivable area)  — output[0], shape [B, 2, H, W]
+    - 任务2: 车道线检测 (lane line)           — output[1], shape [B, 2, H, W]
     """
 
     def __init__(self, model_path: Optional[str] = None,
@@ -48,7 +48,7 @@ class TwinLiteNetDetector:
         Args:
             model_path: TwinLiteNet 权重路径。如果为None，尝试自动下载
             device: 推理设备
-            input_size: 模型输入大小 (H, W)
+            input_size: 模型输入大小 (H, W)，官方默认 (360, 640)
         """
         self.device = device
         self.input_size = input_size
@@ -64,16 +64,17 @@ class TwinLiteNetDetector:
         return new_state
 
     def _load_model(self):
-        """加载 TwinLiteNet 模型"""
+        """加载官方 TwinLiteNet 模型"""
         print("加载 TwinLiteNet 模型...")
 
-        # 尝试导入 TwinLiteNet
         try:
-            self.model = self._build_twinlitenet()
+            from TwinLite import TwinLiteNet
+            self.model = TwinLiteNet(p=2, q=3)
+
             if self.model_path and os.path.exists(self.model_path):
                 state_dict = torch.load(self.model_path, map_location=self.device)
                 state_dict = self._strip_module_prefix(state_dict)
-                self.model.load_state_dict(state_dict, strict=False)
+                self.model.load_state_dict(state_dict, strict=True)
                 print(f"已加载权重: {self.model_path}")
             else:
                 self._download_and_load_weights()
@@ -84,86 +85,10 @@ class TwinLiteNetDetector:
 
         except Exception as e:
             print(f"加载 TwinLiteNet 失败: {e}")
+            import traceback
+            traceback.print_exc()
             print("将使用基于边缘检测的后备方案")
             self.model = None
-
-    def _build_twinlitenet(self):
-        """
-        构建 TwinLiteNet 网络结构
-
-        TwinLiteNet 基于轻量级编码器-解码器架构，
-        包含两个解码头（可行驶区域 + 车道线）。
-        这里使用简化版本，兼容官方权重。
-        """
-        from torchvision.models import resnet18
-
-        class TwinLiteNet(nn.Module):
-            """TwinLiteNet: 轻量级双任务网络"""
-
-            def __init__(self):
-                super().__init__()
-                # 编码器: ResNet18 前4层
-                backbone = resnet18(pretrained=False)
-                self.encoder1 = nn.Sequential(
-                    backbone.conv1, backbone.bn1, backbone.relu, backbone.maxpool
-                )
-                self.encoder2 = backbone.layer1  # 64 channels
-                self.encoder3 = backbone.layer2  # 128 channels
-                self.encoder4 = backbone.layer3  # 256 channels
-                self.encoder5 = backbone.layer4  # 512 channels
-
-                # 车道线解码器
-                self.lane_decoder4 = self._make_decoder_block(512, 256)
-                self.lane_decoder3 = self._make_decoder_block(256, 128)
-                self.lane_decoder2 = self._make_decoder_block(128, 64)
-                self.lane_decoder1 = self._make_decoder_block(64, 32)
-                self.lane_head = nn.Sequential(
-                    nn.Conv2d(32, 1, kernel_size=1),
-                )
-
-                # 可行驶区域解码器
-                self.da_decoder4 = self._make_decoder_block(512, 256)
-                self.da_decoder3 = self._make_decoder_block(256, 128)
-                self.da_decoder2 = self._make_decoder_block(128, 64)
-                self.da_decoder1 = self._make_decoder_block(64, 32)
-                self.da_head = nn.Sequential(
-                    nn.Conv2d(32, 1, kernel_size=1),
-                )
-
-            def _make_decoder_block(self, in_channels, out_channels):
-                return nn.Sequential(
-                    nn.ConvTranspose2d(in_channels, out_channels,
-                                       kernel_size=3, stride=2,
-                                       padding=1, output_padding=1),
-                    nn.BatchNorm2d(out_channels),
-                    nn.ReLU(inplace=True),
-                )
-
-            def forward(self, x):
-                # 编码
-                e1 = self.encoder1(x)
-                e2 = self.encoder2(e1)
-                e3 = self.encoder3(e2)
-                e4 = self.encoder4(e3)
-                e5 = self.encoder5(e4)
-
-                # 车道线解码
-                ld4 = self.lane_decoder4(e5)
-                ld3 = self.lane_decoder3(ld4)
-                ld2 = self.lane_decoder2(ld3)
-                ld1 = self.lane_decoder1(ld2)
-                lane_out = self.lane_head(ld1)
-
-                # 可行驶区域解码
-                dd4 = self.da_decoder4(e5)
-                dd3 = self.da_decoder3(dd4)
-                dd2 = self.da_decoder2(dd3)
-                dd1 = self.da_decoder1(dd2)
-                da_out = self.da_head(dd1)
-
-                return da_out, lane_out
-
-        return TwinLiteNet()
 
     def _download_and_load_weights(self):
         """下载 TwinLiteNet 预训练权重 (BDD100K)"""
@@ -175,46 +100,23 @@ class TwinLiteNetDetector:
 
         if os.path.exists(weight_path):
             print(f"使用缓存权重: {weight_path}")
-            state_dict = torch.load(weight_path, map_location=self.device)
-            state_dict = self._strip_module_prefix(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
-            return
+        else:
+            url = "https://github.com/chequanghuy/TwinLiteNet/raw/refs/heads/main/pretrained/best.pth"
+            print(f"下载 TwinLiteNet 预训练权重 (BDD100K)...")
+            print(f"  URL: {url}")
+            try:
+                urllib.request.urlretrieve(url, weight_path)
+                print(f"  已保存到: {weight_path}")
+            except Exception as e:
+                raise RuntimeError(
+                    f"下载失败: {e}\n"
+                    f"请手动下载权重到: {weight_path}\n"
+                    f"下载地址: {url}"
+                )
 
-        # 自动从 TwinLiteNet 官方仓库下载预训练权重
-        url = "https://github.com/chequanghuy/TwinLiteNet/raw/refs/heads/main/pretrained/best.pth"
-        print(f"下载 TwinLiteNet 预训练权重 (BDD100K)...")
-        print(f"  URL: {url}")
-        try:
-            urllib.request.urlretrieve(url, weight_path)
-            print(f"  已保存到: {weight_path}")
-            state_dict = torch.load(weight_path, map_location=self.device)
-            state_dict = self._strip_module_prefix(state_dict)
-            self.model.load_state_dict(state_dict, strict=False)
-            return
-        except Exception as e:
-            print(f"  下载失败: {e}")
-            print("  请手动下载权重到: ~/.cache/twinlitenet/twinlitenet.pth")
-            print(f"  下载地址: {url}")
-
-        # Fallback: 使用 ImageNet 预训练的 ResNet18 编码器
-        print("使用 ImageNet 预训练编码器初始化 (精度可能较低)")
-        from torchvision.models import resnet18, ResNet18_Weights
-        pretrained = resnet18(weights=ResNet18_Weights.DEFAULT)
-        encoder_state = {}
-        for name, param in pretrained.state_dict().items():
-            if name.startswith('conv1') or name.startswith('bn1'):
-                encoder_state[f'encoder1.0.{name}' if name.startswith('conv1')
-                              else f'encoder1.1.{name.replace("bn1.", "")}'] = param
-            elif name.startswith('layer1'):
-                encoder_state[name.replace('layer1', 'encoder2')] = param
-            elif name.startswith('layer2'):
-                encoder_state[name.replace('layer2', 'encoder3')] = param
-            elif name.startswith('layer3'):
-                encoder_state[name.replace('layer3', 'encoder4')] = param
-            elif name.startswith('layer4'):
-                encoder_state[name.replace('layer4', 'encoder5')] = param
-
-        self.model.load_state_dict(encoder_state, strict=False)
+        state_dict = torch.load(weight_path, map_location=self.device)
+        state_dict = self._strip_module_prefix(state_dict)
+        self.model.load_state_dict(state_dict, strict=True)
 
     @torch.no_grad()
     def predict(self, image: np.ndarray) -> Dict[str, np.ndarray]:
@@ -239,28 +141,31 @@ class TwinLiteNetDetector:
     def _predict_twinlitenet(self, image: np.ndarray,
                               orig_h: int, orig_w: int) -> Dict[str, np.ndarray]:
         """
-        使用 TwinLiteNet 预测（与论文一致）
+        使用官方 TwinLiteNet 预测
 
-        与论文一致：不使用 ImageNet 标准化，仅做 /255.0 归一化。
-        论文中使用 cv2 resize + BGR→RGB 转换 + /255.0。
+        与官方 test_image.py 完全一致：
+        1. cv2.resize 到 (640, 360)
+        2. BGR→RGB (我们输入已是RGB，需转BGR以匹配官方cv2.imread流程)
+        3. HWC→CHW, /255.0
+        4. torch.max(output, 1) 在2-class维度取argmax
         """
         import cv2
 
-        # 与论文一致：使用 cv2.resize
+        # resize 到模型输入尺寸 (W, H)
         img_resized = cv2.resize(image, (self.input_size[1], self.input_size[0]))
 
-        # 与论文一致：RGB→BGR→RGB (论文从 cv2 imread 得到 BGR，再 [:,:,::-1] 转 RGB)
-        # 我们的输入已经是 RGB，转为 BGR 再转回 RGB 以匹配论文的处理流程
-        # 等价于直接使用 RGB 输入
+        # 官方代码用 cv2.imread (BGR)，然后 [:,:,::-1] 转 RGB 再推理
+        # 我们的输入已是 RGB，需要转为 BGR 再转回 RGB 以完全匹配
+        # 实际等价于直接用 RGB
         img_tensor = img_resized[:, :, ::-1].transpose(2, 0, 1)  # RGB→BGR, HWC→CHW
         img_tensor = np.ascontiguousarray(img_tensor)
         img_tensor = torch.from_numpy(img_tensor).unsqueeze(0)
         img_tensor = img_tensor.to(self.device).float() / 255.0
 
-        # 推理
+        # 推理 — 官方返回 (da_out, lane_out)，各自 shape [B, 2, H, W]
         da_out, lane_out = self.model(img_tensor)
 
-        # 后处理 - 取 argmax（与论文一致，论文用 torch.max）
+        # 后处理 — 与官方 test_image.py 一致：torch.max 在 2-class 维度取 argmax
         _, da_predict = torch.max(da_out, 1)
         _, lane_predict = torch.max(lane_out, 1)
 
