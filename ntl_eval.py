@@ -538,13 +538,10 @@ def evaluate_ntl_consistency(config: Dict,
 
             # 保存可视化
             if save_vis:
-                _save_lane_vis(
-                    gen_img, pred_gen,
-                    os.path.join(camera_out_dir, f"{filename}_gen_lane.png")
-                )
-                _save_lane_vis(
-                    gt_img, pred_gt,
-                    os.path.join(camera_out_dir, f"{filename}_gt_lane.png")
+                # 保存GT vs Gen对比图
+                _save_lane_vis_compare(
+                    gen_img, gt_img, pred_gen, pred_gt, metrics,
+                    os.path.join(camera_out_dir, f"{filename}_compare.png")
                 )
 
         # 汇总该相机的指标
@@ -567,12 +564,16 @@ def evaluate_ntl_consistency(config: Dict,
     return results
 
 
-def _save_lane_vis(image: np.ndarray, prediction: Dict[str, np.ndarray],
-                   save_path: str):
-    """保存车道线检测可视化"""
-    from PIL import Image as PILImage
-
+def _overlay_masks(image: np.ndarray, prediction: Dict[str, np.ndarray]) -> np.ndarray:
+    """在图像上叠加车道线和可行驶区域mask"""
     img = image.copy()
+
+    # 可行驶区域叠加（蓝色半透明，先画DA再画lane，lane在上层）
+    da_mask = prediction.get('da_mask', None)
+    if da_mask is not None and da_mask.any():
+        img[da_mask, 0] = np.clip(img[da_mask, 0].astype(int) * 0.7, 0, 255).astype(np.uint8)
+        img[da_mask, 1] = np.clip(img[da_mask, 1].astype(int) * 0.7, 0, 255).astype(np.uint8)
+        img[da_mask, 2] = np.clip(img[da_mask, 2].astype(int) * 0.7 + 80, 0, 255).astype(np.uint8)
 
     # 车道线叠加（绿色）
     lane_mask = prediction['lane_mask']
@@ -581,15 +582,109 @@ def _save_lane_vis(image: np.ndarray, prediction: Dict[str, np.ndarray],
         img[lane_mask, 1] = np.clip(img[lane_mask, 1].astype(int) * 0.5 + 128, 0, 255).astype(np.uint8)
         img[lane_mask, 2] = np.clip(img[lane_mask, 2].astype(int) * 0.5, 0, 255).astype(np.uint8)
 
-    # 可行驶区域叠加（蓝色半透明）
-    da_mask = prediction.get('da_mask', None)
-    if da_mask is not None and da_mask.any():
-        overlay = img.copy()
-        overlay[da_mask, 0] = np.clip(overlay[da_mask, 0].astype(int) * 0.7, 0, 255).astype(np.uint8)
-        overlay[da_mask, 1] = np.clip(overlay[da_mask, 1].astype(int) * 0.7, 0, 255).astype(np.uint8)
-        overlay[da_mask, 2] = np.clip(overlay[da_mask, 2].astype(int) * 0.7 + 80, 0, 255).astype(np.uint8)
-        img = overlay
+    return img
 
+
+def _save_lane_vis_compare(gen_img: np.ndarray, gt_img: np.ndarray,
+                           pred_gen: Dict[str, np.ndarray],
+                           pred_gt: Dict[str, np.ndarray],
+                           metrics: Dict[str, float],
+                           save_path: str):
+    """
+    保存GT与Gen的车道线检测对比可视化（拼成一张图）
+
+    上排：原图对比（左GT右Gen）
+    下排：检测结果叠加对比（左GT右Gen）
+    底部：像素统计和指标信息
+    """
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+
+    h, w = gt_img.shape[:2]
+
+    # 叠加mask
+    gt_vis = _overlay_masks(gt_img, pred_gt)
+    gen_vis = _overlay_masks(gen_img, pred_gen)
+
+    # 统计像素数
+    gt_lane_px = int(pred_gt['lane_mask'].sum())
+    gen_lane_px = int(pred_gen['lane_mask'].sum())
+    gt_da_px = int(pred_gt.get('da_mask', np.zeros(1)).sum())
+    gen_da_px = int(pred_gen.get('da_mask', np.zeros(1)).sum())
+    total_px = h * w
+
+    # 构建拼接图：2行2列 + 底部信息条
+    info_h = 60
+    canvas_w = w * 2 + 4  # 中间4px分隔
+    canvas_h = h * 2 + 4 + info_h  # 行间4px分隔 + 底部信息
+    canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+
+    # 上排：原图 (左GT 右Gen)
+    canvas[0:h, 0:w] = gt_img
+    canvas[0:h, w + 4:w * 2 + 4] = gen_img
+
+    # 下排：叠加检测结果
+    canvas[h + 4:h * 2 + 4, 0:w] = gt_vis
+    canvas[h + 4:h * 2 + 4, w + 4:w * 2 + 4] = gen_vis
+
+    # 中间分隔线（白色）
+    canvas[:h * 2 + 4, w:w + 4] = 255
+    canvas[h:h + 4, :] = 255
+
+    # 底部信息区（深灰背景）
+    canvas[h * 2 + 4:, :] = 40
+
+    # 转PIL添加文字
+    pil_img = PILImage.fromarray(canvas)
+    draw = ImageDraw.Draw(pil_img)
+
+    # 尝试加载字体
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 14)
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", 16)
+    except (OSError, IOError):
+        font = ImageFont.load_default()
+        font_title = font
+
+    # 标题
+    draw.text((10, 5), "GT (Ground Truth)", fill=(255, 255, 0), font=font_title)
+    draw.text((w + 14, 5), "Gen (Generated)", fill=(255, 255, 0), font=font_title)
+    draw.text((10, h + 9), "GT + Detection", fill=(255, 255, 0), font=font_title)
+    draw.text((w + 14, h + 9), "Gen + Detection", fill=(255, 255, 0), font=font_title)
+
+    # 图例（在下排图像上）
+    legend_y = h + 4 + h - 25
+    draw.text((10, legend_y), "■ Lane (green)  ■ Drivable Area (blue)", fill=(255, 255, 255), font=font)
+
+    # 底部统计信息
+    info_y = h * 2 + 8
+    ntl_iou = metrics.get('ntl_iou', 0)
+    ntl_f1 = metrics.get('ntl_f1', 0)
+    da_iou = metrics.get('da_iou', 0)
+
+    stats_line1 = (f"GT lane: {gt_lane_px:,}px ({gt_lane_px/total_px*100:.2f}%)  |  "
+                   f"Gen lane: {gen_lane_px:,}px ({gen_lane_px/total_px*100:.2f}%)  |  "
+                   f"GT DA: {gt_da_px:,}px ({gt_da_px/total_px*100:.2f}%)  |  "
+                   f"Gen DA: {gen_da_px:,}px ({gen_da_px/total_px*100:.2f}%)")
+    stats_line2 = (f"NTL-IoU: {ntl_iou:.1f}%  |  NTL-F1: {ntl_f1:.1f}%  |  DA-IoU: {da_iou:.1f}%")
+
+    # 如果两个mask都空，标红警告
+    if gt_lane_px == 0 and gen_lane_px == 0:
+        stats_line2 += "  ⚠ BOTH LANE MASKS EMPTY"
+        color2 = (255, 80, 80)
+    else:
+        color2 = (0, 255, 150)
+
+    draw.text((10, info_y), stats_line1, fill=(200, 200, 200), font=font)
+    draw.text((10, info_y + 22), stats_line2, fill=color2, font=font)
+
+    pil_img.save(save_path)
+
+
+def _save_lane_vis(image: np.ndarray, prediction: Dict[str, np.ndarray],
+                   save_path: str):
+    """保存单张车道线检测可视化（保留向后兼容）"""
+    from PIL import Image as PILImage
+    img = _overlay_masks(image, prediction)
     PILImage.fromarray(img).save(save_path)
 
 

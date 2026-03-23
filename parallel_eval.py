@@ -330,7 +330,7 @@ def _worker_ntl(camera: str, pairs: List[Tuple[str, str]],
         torch.cuda.set_device(gpu_id)
 
         from ntl_eval import (get_ntl_detector, compute_mask_iou,
-                              compute_mask_f1, _save_lane_vis)
+                              compute_mask_f1, _save_lane_vis_compare)
         from utils import load_image, ensure_dir
         from tqdm import tqdm
 
@@ -378,10 +378,9 @@ def _worker_ntl(camera: str, pairs: List[Tuple[str, str]],
             camera_metrics.append(metrics)
 
             if save_vis:
-                _save_lane_vis(gen_img, pred_gen,
-                    os.path.join(camera_out_dir, f"{filename}_gen_lane.png"))
-                _save_lane_vis(gt_img, pred_gt,
-                    os.path.join(camera_out_dir, f"{filename}_gt_lane.png"))
+                _save_lane_vis_compare(
+                    gen_img, gt_img, pred_gen, pred_gt, metrics,
+                    os.path.join(camera_out_dir, f"{filename}_compare.png"))
 
         result_dict[camera] = aggregate_metrics(camera_metrics)
         print(f"\n  [GPU:{gpu_id}] {camera} 完成!")
