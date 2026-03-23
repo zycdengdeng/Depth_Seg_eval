@@ -55,6 +55,14 @@ class TwinLiteNetDetector:
         self.model_path = model_path
         self._load_model()
 
+    @staticmethod
+    def _strip_module_prefix(state_dict):
+        """去除 DataParallel 保存的 'module.' 前缀"""
+        new_state = {}
+        for k, v in state_dict.items():
+            new_state[k.removeprefix('module.')] = v
+        return new_state
+
     def _load_model(self):
         """加载 TwinLiteNet 模型"""
         print("加载 TwinLiteNet 模型...")
@@ -64,6 +72,7 @@ class TwinLiteNetDetector:
             self.model = self._build_twinlitenet()
             if self.model_path and os.path.exists(self.model_path):
                 state_dict = torch.load(self.model_path, map_location=self.device)
+                state_dict = self._strip_module_prefix(state_dict)
                 self.model.load_state_dict(state_dict, strict=False)
                 print(f"已加载权重: {self.model_path}")
             else:
@@ -157,7 +166,7 @@ class TwinLiteNetDetector:
         return TwinLiteNet()
 
     def _download_and_load_weights(self):
-        """尝试下载预训练权重"""
+        """下载 TwinLiteNet 预训练权重 (BDD100K)"""
         import urllib.request
 
         cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "twinlitenet")
@@ -167,15 +176,28 @@ class TwinLiteNetDetector:
         if os.path.exists(weight_path):
             print(f"使用缓存权重: {weight_path}")
             state_dict = torch.load(weight_path, map_location=self.device)
+            state_dict = self._strip_module_prefix(state_dict)
             self.model.load_state_dict(state_dict, strict=False)
             return
 
-        # 如果没有找到权重，使用 ImageNet 预训练的 ResNet18 编码器
-        print("未找到 TwinLiteNet 预训练权重，使用 ImageNet 预训练编码器初始化")
-        print("建议手动下载权重到: ~/.cache/twinlitenet/twinlitenet.pth")
-        print("或在配置文件中指定 ntl.model_path")
+        # 自动从 TwinLiteNet 官方仓库下载预训练权重
+        url = "https://github.com/chequanghuy/TwinLiteNet/raw/refs/heads/main/pretrained/best.pth"
+        print(f"下载 TwinLiteNet 预训练权重 (BDD100K)...")
+        print(f"  URL: {url}")
+        try:
+            urllib.request.urlretrieve(url, weight_path)
+            print(f"  已保存到: {weight_path}")
+            state_dict = torch.load(weight_path, map_location=self.device)
+            state_dict = self._strip_module_prefix(state_dict)
+            self.model.load_state_dict(state_dict, strict=False)
+            return
+        except Exception as e:
+            print(f"  下载失败: {e}")
+            print("  请手动下载权重到: ~/.cache/twinlitenet/twinlitenet.pth")
+            print(f"  下载地址: {url}")
 
-        # 加载 ImageNet 预训练的 ResNet18 编码器权重
+        # Fallback: 使用 ImageNet 预训练的 ResNet18 编码器
+        print("使用 ImageNet 预训练编码器初始化 (精度可能较低)")
         from torchvision.models import resnet18, ResNet18_Weights
         pretrained = resnet18(weights=ResNet18_Weights.DEFAULT)
         encoder_state = {}
