@@ -373,10 +373,16 @@ def aggregate_metrics(metrics_list: List[Dict[str, float]]) -> Dict[str, float]:
         return {}
 
     aggregated = {}
-    keys = metrics_list[0].keys()
+    # 收集所有样本中出现过的key（per_class指标可能不是每帧都有）
+    keys = set()
+    for m in metrics_list:
+        keys.update(m.keys())
 
     for key in keys:
-        raw_values = [m[key] for m in metrics_list]
+        raw_values = [m[key] for m in metrics_list if key in m]
+
+        if not raw_values:
+            continue
 
         # 检查是否是列表类型（如class_iou）
         if isinstance(raw_values[0], (list, np.ndarray)):
