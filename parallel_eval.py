@@ -309,7 +309,8 @@ def _worker_nta(camera: str, pairs: List[Tuple[str, str]],
             if save_vis:
                 _save_detection_vis_compare(
                     gen_img, gt_img, dets_gen, dets_gt, metrics,
-                    os.path.join(camera_out_dir, f"{filename}_compare.png"))
+                    os.path.join(camera_out_dir, f"{filename}_compare.png"),
+                    detect_size=detector.detect_size)
 
         result_dict[camera] = aggregate_metrics(camera_metrics)
         print(f"\n  [GPU:{gpu_id}] {camera} 完成!")

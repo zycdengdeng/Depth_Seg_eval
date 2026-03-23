@@ -380,7 +380,8 @@ def evaluate_nta_consistency(config: Dict,
             if save_vis:
                 _save_detection_vis_compare(
                     gen_img, gt_img, dets_gen, dets_gt, metrics,
-                    os.path.join(camera_out_dir, f"{filename}_compare.png")
+                    os.path.join(camera_out_dir, f"{filename}_compare.png"),
+                    detect_size=detector.detect_size
                 )
 
         # 汇总该相机的指标
@@ -413,10 +414,34 @@ _DET_COLORS = {
 }
 
 
-def _draw_detections(draw, detections: List[Dict], font):
-    """在ImageDraw上绘制检测框"""
+def _scale_bbox(bbox: List[float], detect_size: Tuple[int, int],
+                orig_size: Tuple[int, int]) -> List[float]:
+    """将检测坐标从detect_size缩放回原图尺寸
+
+    Args:
+        bbox: [x1, y1, x2, y2] 在detect_size空间
+        detect_size: (width, height) 检测分辨率
+        orig_size: (width, height) 原图分辨率
+    """
+    sx = orig_size[0] / detect_size[0]
+    sy = orig_size[1] / detect_size[1]
+    return [bbox[0] * sx, bbox[1] * sy, bbox[2] * sx, bbox[3] * sy]
+
+
+def _draw_detections(draw, detections: List[Dict], font,
+                     detect_size: Tuple[int, int] = None,
+                     orig_size: Tuple[int, int] = None):
+    """在ImageDraw上绘制检测框
+
+    Args:
+        detect_size: (w, h) YOLO检测分辨率，传入则缩放坐标
+        orig_size: (w, h) 原图分辨率
+    """
+    need_scale = detect_size is not None and orig_size is not None
     for det in detections:
         bbox = det['bbox']
+        if need_scale:
+            bbox = _scale_bbox(bbox, detect_size, orig_size)
         cls_id = det['class_id']
         color = _DET_COLORS.get(cls_id, (255, 255, 255))
         label = f"{det['class_name']} {det['confidence']:.2f}"
@@ -428,10 +453,12 @@ def _draw_detections(draw, detections: List[Dict], font):
 
 
 def _save_detection_vis(image: np.ndarray, detections: List[Dict],
-                        save_path: str):
+                        save_path: str,
+                        detect_size: Tuple[int, int] = None):
     """保存单张检测结果可视化（保留向后兼容）"""
     from PIL import Image as PILImage, ImageDraw, ImageFont
 
+    h, w = image.shape[:2]
     img = PILImage.fromarray(image)
     draw = ImageDraw.Draw(img)
 
@@ -440,14 +467,16 @@ def _save_detection_vis(image: np.ndarray, detections: List[Dict],
     except (OSError, IOError):
         font = ImageFont.load_default()
 
-    _draw_detections(draw, detections, font)
+    _draw_detections(draw, detections, font,
+                     detect_size=detect_size, orig_size=(w, h))
     img.save(save_path)
 
 
 def _save_detection_vis_compare(gen_img: np.ndarray, gt_img: np.ndarray,
                                 dets_gen: List[Dict], dets_gt: List[Dict],
                                 metrics: Dict[str, float],
-                                save_path: str):
+                                save_path: str,
+                                detect_size: Tuple[int, int] = None):
     """
     保存GT与Gen的目标检测对比可视化（拼成一张图）
 
@@ -467,15 +496,19 @@ def _save_detection_vis_compare(gen_img: np.ndarray, gt_img: np.ndarray,
         font = ImageFont.load_default()
         font_title = font
 
+    orig_size = (w, h)
+
     # 绘制GT检测图
     gt_pil = PILImage.fromarray(gt_img)
     gt_draw = ImageDraw.Draw(gt_pil)
-    _draw_detections(gt_draw, dets_gt, font)
+    _draw_detections(gt_draw, dets_gt, font,
+                     detect_size=detect_size, orig_size=orig_size)
 
     # 绘制Gen检测图
     gen_pil = PILImage.fromarray(gen_img)
     gen_draw = ImageDraw.Draw(gen_pil)
-    _draw_detections(gen_draw, dets_gen, font)
+    _draw_detections(gen_draw, dets_gen, font,
+                     detect_size=detect_size, orig_size=orig_size)
 
     # 拼接：左GT右Gen + 底部信息
     info_h = 80
