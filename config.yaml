@@ -53,6 +53,24 @@ segmentation:
         edge: "right"
         ratio: 0.15  # 右边15%
 
+# NTA-IoU 配置 (交通参与者检测一致性，使用YOLO11)
+nta:
+  model_size: "l"              # YOLO11模型大小: n/s/m/l/x
+  device: "cuda"
+  conf_threshold: 0.25         # 检测置信度阈值
+  iou_threshold: 0.45          # NMS的IoU阈值
+  match_iou_threshold: 0.5     # 匹配gen/gt检测框的IoU阈值
+  per_class: true              # 是否计算每个交通参与者类别的NTA-IoU
+
+# NTL-IoU 配置 (车道线检测一致性，使用TwinLiteNet)
+ntl:
+  model_path: null             # TwinLiteNet权重路径，null则自动下载/使用预训练编码器
+  device: "cuda"
+  input_height: 360            # TwinLiteNet输入高度
+  input_width: 640             # TwinLiteNet输入宽度
+  lane_tolerance: 3            # 车道线F1计算的容差像素数
+  compute_drivable_area: true  # 是否同时计算可行驶区域IoU
+
 # 评测指标
 metrics:
   depth:

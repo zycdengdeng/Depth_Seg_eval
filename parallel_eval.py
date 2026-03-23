@@ -261,6 +261,137 @@ def _worker_image_metrics(camera: str, pairs: List[Tuple[str, str]],
         result_dict[camera] = {}
 
 
+def _worker_nta(camera: str, pairs: List[Tuple[str, str]],
+                config: Dict, gpu_id: int, save_vis: bool,
+                result_dict: dict):
+    """单GPU NTA-IoU评测worker"""
+    try:
+        import torch
+        torch.cuda.set_device(gpu_id)
+
+        from nta_eval import (get_nta_detector, match_detections,
+                              compute_nta_per_class, TRAFFIC_AGENT_IDS,
+                              _save_detection_vis)
+        from utils import load_image, ensure_dir
+        from tqdm import tqdm
+
+        worker_config = deepcopy(config)
+        worker_config['nta']['device'] = f'cuda:{gpu_id}'
+        detector = get_nta_detector(worker_config)
+
+        nta_config = config.get('nta', {})
+        match_iou_threshold = nta_config.get('match_iou_threshold', 0.5)
+        compute_per_class = nta_config.get('per_class', True)
+
+        output_dir = os.path.join(config['output'].get('root', './results'), 'nta_maps')
+        camera_out_dir = os.path.join(output_dir, camera)
+        if save_vis:
+            ensure_dir(camera_out_dir)
+
+        camera_metrics = []
+
+        for gen_path, gt_path in tqdm(pairs, desc=f"  [GPU:{gpu_id}] {camera}"):
+            filename = os.path.basename(gen_path).replace('.png', '')
+
+            gen_img = load_image(gen_path)
+            gt_img = load_image(gt_path)
+
+            dets_gen = detector.detect(gen_img, filter_classes=TRAFFIC_AGENT_IDS)
+            dets_gt = detector.detect(gt_img, filter_classes=TRAFFIC_AGENT_IDS)
+
+            metrics = match_detections(dets_gen, dets_gt, match_iou_threshold)
+            if compute_per_class:
+                per_class = compute_nta_per_class(dets_gen, dets_gt, match_iou_threshold)
+                metrics.update(per_class)
+
+            camera_metrics.append(metrics)
+
+            if save_vis:
+                _save_detection_vis(gen_img, dets_gen,
+                    os.path.join(camera_out_dir, f"{filename}_gen_det.png"))
+                _save_detection_vis(gt_img, dets_gt,
+                    os.path.join(camera_out_dir, f"{filename}_gt_det.png"))
+
+        result_dict[camera] = aggregate_metrics(camera_metrics)
+        print(f"\n  [GPU:{gpu_id}] {camera} 完成!")
+
+    except Exception as e:
+        print(f"\n  [GPU:{gpu_id}] {camera} 出错: {e}")
+        traceback.print_exc()
+        result_dict[camera] = {}
+
+
+def _worker_ntl(camera: str, pairs: List[Tuple[str, str]],
+                config: Dict, gpu_id: int, save_vis: bool,
+                result_dict: dict):
+    """单GPU NTL-IoU评测worker"""
+    try:
+        import torch
+        torch.cuda.set_device(gpu_id)
+
+        from ntl_eval import (get_ntl_detector, compute_mask_iou,
+                              compute_mask_f1, _save_lane_vis)
+        from utils import load_image, ensure_dir
+        from tqdm import tqdm
+
+        worker_config = deepcopy(config)
+        worker_config['ntl']['device'] = f'cuda:{gpu_id}'
+        detector = get_ntl_detector(worker_config)
+
+        ntl_config = config.get('ntl', {})
+        lane_tolerance = ntl_config.get('lane_tolerance', 3)
+        compute_da = ntl_config.get('compute_drivable_area', True)
+
+        output_dir = os.path.join(config['output'].get('root', './results'), 'ntl_maps')
+        camera_out_dir = os.path.join(output_dir, camera)
+        if save_vis:
+            ensure_dir(camera_out_dir)
+
+        camera_metrics = []
+
+        for gen_path, gt_path in tqdm(pairs, desc=f"  [GPU:{gpu_id}] {camera}"):
+            filename = os.path.basename(gen_path).replace('.png', '')
+
+            gen_img = load_image(gen_path)
+            gt_img = load_image(gt_path)
+
+            pred_gen = detector.predict(gen_img)
+            pred_gt = detector.predict(gt_img)
+
+            ntl_iou = compute_mask_iou(pred_gen['lane_mask'], pred_gt['lane_mask'])
+            lane_f1 = compute_mask_f1(
+                pred_gen['lane_mask'], pred_gt['lane_mask'],
+                tolerance=lane_tolerance
+            )
+
+            metrics = {
+                'ntl_iou': ntl_iou,
+                'ntl_precision': lane_f1['precision'],
+                'ntl_recall': lane_f1['recall'],
+                'ntl_f1': lane_f1['f1'],
+            }
+
+            if compute_da:
+                da_iou = compute_mask_iou(pred_gen['da_mask'], pred_gt['da_mask'])
+                metrics['da_iou'] = da_iou
+
+            camera_metrics.append(metrics)
+
+            if save_vis:
+                _save_lane_vis(gen_img, pred_gen,
+                    os.path.join(camera_out_dir, f"{filename}_gen_lane.png"))
+                _save_lane_vis(gt_img, pred_gt,
+                    os.path.join(camera_out_dir, f"{filename}_gt_lane.png"))
+
+        result_dict[camera] = aggregate_metrics(camera_metrics)
+        print(f"\n  [GPU:{gpu_id}] {camera} 完成!")
+
+    except Exception as e:
+        print(f"\n  [GPU:{gpu_id}] {camera} 出错: {e}")
+        traceback.print_exc()
+        result_dict[camera] = {}
+
+
 def _preload_models(task: str, config: Dict):
     """
     在主进程中预下载模型到缓存，避免多进程同时下载导致冲突
@@ -309,6 +440,19 @@ def _preload_models(task: str, config: Dict):
         print("  预加载 LPIPS (AlexNet)...")
         _ = lpips.LPIPS(net='alex')
         print("  LPIPS 缓存就绪")
+
+    elif task == 'nta':
+        print("  预加载 YOLO11...")
+        from ultralytics import YOLO
+        model_size = config.get('nta', {}).get('model_size', 'l')
+        _ = YOLO(f"yolo11{model_size}.pt")
+        print("  YOLO11 缓存就绪")
+
+    elif task == 'ntl':
+        print("  预加载 TwinLiteNet (ResNet18 backbone)...")
+        from torchvision.models import resnet18, ResNet18_Weights
+        _ = resnet18(weights=ResNet18_Weights.DEFAULT)
+        print("  TwinLiteNet backbone 缓存就绪")
 
     print("模型缓存就绪!\n")
 
@@ -362,6 +506,8 @@ def evaluate_parallel(config: Dict, task: str = "depth",
         'segmentation': _worker_seg,
         'sam': _worker_sam,
         'image_metrics': _worker_image_metrics,
+        'nta': _worker_nta,
+        'ntl': _worker_ntl,
     }[task]
 
     # 创建输出目录
@@ -371,6 +517,10 @@ def evaluate_parallel(config: Dict, task: str = "depth",
         ensure_dir(config['output']['seg_maps'])
     elif task == 'sam':
         ensure_dir(os.path.join(config['output'].get('root', './results'), 'sam_maps'))
+    elif task == 'nta':
+        ensure_dir(os.path.join(config['output'].get('root', './results'), 'nta_maps'))
+    elif task == 'ntl':
+        ensure_dir(os.path.join(config['output'].get('root', './results'), 'ntl_maps'))
 
     # 使用multiprocessing并行
     mp.set_start_method('spawn', force=True)
@@ -434,7 +584,7 @@ def evaluate_parallel(config: Dict, task: str = "depth",
 
     # 打印结果
     task_name = {'depth': '深度', 'seg': '分割', 'segmentation': '分割', 'sam': 'SAM结构',
-                 'image_metrics': '图像质量'}
+                 'image_metrics': '图像质量', 'nta': 'NTA-IoU', 'ntl': 'NTL-IoU'}
     print(f"\n{'=' * 60}")
     print(f"总体{task_name.get(task, task)}评测结果:")
     if 'overall' in results:

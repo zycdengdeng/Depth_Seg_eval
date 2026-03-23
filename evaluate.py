@@ -69,12 +69,26 @@ def run_fvd_evaluation(config: Dict, save_vis: bool = False) -> Dict:
     return evaluate_fvd(config, save_vis=save_vis)
 
 
+def run_nta_evaluation(config: Dict, save_vis: bool = True) -> Dict:
+    """运行NTA-IoU评测 (交通参与者检测一致性)"""
+    from nta_eval import evaluate_nta_consistency
+    return evaluate_nta_consistency(config, save_vis=save_vis)
+
+
+def run_ntl_evaluation(config: Dict, save_vis: bool = True) -> Dict:
+    """运行NTL-IoU评测 (车道线检测一致性)"""
+    from ntl_eval import evaluate_ntl_consistency
+    return evaluate_ntl_consistency(config, save_vis=save_vis)
+
+
 def generate_report(depth_results: Optional[Dict],
                     seg_results: Optional[Dict],
                     output_path: str,
                     sam_results: Optional[Dict] = None,
                     image_metrics_results: Optional[Dict] = None,
-                    fvd_results: Optional[Dict] = None):
+                    fvd_results: Optional[Dict] = None,
+                    nta_results: Optional[Dict] = None,
+                    ntl_results: Optional[Dict] = None):
     """生成综合评测报告"""
     report = []
     report.append("=" * 70)
@@ -253,6 +267,66 @@ def generate_report(depth_results: Optional[Dict],
             if camera != 'overall' and 'fvd' in camera_res:
                 report.append(f"  [{camera}] FVD = {camera_res['fvd']:.2f}")
 
+    if nta_results:
+        report.append("\n\n## NTA-IoU (交通参与者检测一致性) 评测")
+        report.append("-" * 50)
+        report.append("评测指标说明:")
+        report.append("  - nta_iou: 交通参与者检测IoU (越高越好)")
+        report.append("  - nta_precision: 检测精确率 (越高越好)")
+        report.append("  - nta_recall: 检测召回率 (越高越好)")
+        report.append("  使用YOLO11检测，对gen和gt图分别检测后匹配比较")
+        report.append("-" * 50)
+
+        if 'overall' in nta_results:
+            overall = nta_results['overall']
+            report.append("\n总体结果:")
+            for key in ['nta_iou', 'nta_precision', 'nta_recall']:
+                if key in overall:
+                    value = overall[key]
+                    std_key = f'{key}_std'
+                    fmt = f"  {key:<16}: {value:.2f}%"
+                    if std_key in overall:
+                        fmt += f" ± {overall[std_key]:.2f}%"
+                    report.append(fmt)
+
+        report.append("\n各相机结果:")
+        for camera, results in nta_results.items():
+            if camera != 'overall':
+                report.append(f"\n  [{camera}]")
+                for key in ['nta_iou', 'nta_precision', 'nta_recall']:
+                    if key in results:
+                        report.append(f"    {key:<16}: {results[key]:.2f}%")
+
+    if ntl_results:
+        report.append("\n\n## NTL-IoU (车道线检测一致性) 评测")
+        report.append("-" * 50)
+        report.append("评测指标说明:")
+        report.append("  - ntl_iou: 车道线检测IoU (越高越好)")
+        report.append("  - ntl_f1: 车道线F1分数 (越高越好)")
+        report.append("  - da_iou: 可行驶区域IoU (越高越好)")
+        report.append("  使用TwinLiteNet检测，对gen和gt图分别检测后比较")
+        report.append("-" * 50)
+
+        if 'overall' in ntl_results:
+            overall = ntl_results['overall']
+            report.append("\n总体结果:")
+            for key in ['ntl_iou', 'ntl_f1', 'ntl_precision', 'ntl_recall', 'da_iou']:
+                if key in overall:
+                    value = overall[key]
+                    std_key = f'{key}_std'
+                    fmt = f"  {key:<16}: {value:.2f}%"
+                    if std_key in overall:
+                        fmt += f" ± {overall[std_key]:.2f}%"
+                    report.append(fmt)
+
+        report.append("\n各相机结果:")
+        for camera, results in ntl_results.items():
+            if camera != 'overall':
+                report.append(f"\n  [{camera}]")
+                for key in ['ntl_iou', 'ntl_f1', 'da_iou']:
+                    if key in results:
+                        report.append(f"    {key:<16}: {results[key]:.2f}%")
+
     report.append("\n" + "=" * 70)
     report.append("评测完成")
     report.append("=" * 70)
@@ -276,8 +350,8 @@ def main():
     )
     parser.add_argument(
         "--task", type=str, default="all",
-        choices=["all", "depth", "segmentation", "seg", "sam", "image_metrics", "fvd"],
-        help="评测任务: all(全部), depth(深度), seg(分割), sam(SAM), image_metrics(PSNR/SSIM/LPIPS/FID), fvd(视频距离)"
+        choices=["all", "depth", "segmentation", "seg", "sam", "image_metrics", "fvd", "nta", "ntl"],
+        help="评测任务: all(全部), depth(深度), seg(分割), sam(SAM), image_metrics(PSNR/SSIM/LPIPS/FID), fvd(视频距离), nta(NTA-IoU), ntl(NTL-IoU)"
     )
     parser.add_argument(
         "--no-vis", action="store_true",
@@ -323,6 +397,8 @@ def main():
     sam_results = None
     image_metrics_results = None
     fvd_results = None
+    nta_results = None
+    ntl_results = None
     save_vis = not args.no_vis
 
     def _run_task(task_name, run_fn, run_parallel_task=None):
@@ -330,7 +406,9 @@ def main():
         label = {'depth': '深度一致性', 'seg': '语义分割一致性',
                  'segmentation': '语义分割一致性', 'sam': 'SAM结构一致性',
                  'image_metrics': '图像质量(PSNR/SSIM/LPIPS/FID)',
-                 'fvd': 'FVD(视频Fréchet距离)'}
+                 'fvd': 'FVD(视频Fréchet距离)',
+                 'nta': 'NTA-IoU(交通参与者检测一致性)',
+                 'ntl': 'NTL-IoU(车道线检测一致性)'}
         print(f"\n{'=' * 70}")
         print(f"开始{label.get(task_name, task_name)}评测...")
         if args.parallel:
@@ -400,6 +478,22 @@ def main():
                 json.dump(convert_to_serializable(fvd_results), f, indent=2)
             print(f"FVD评测结果已保存到: {fvd_output}")
 
+    if args.task in ["all", "nta"]:
+        nta_results = _run_task("nta", run_nta_evaluation)
+        if nta_results:
+            nta_output = os.path.join(config['output']['metrics'], 'nta_results.json')
+            with open(nta_output, 'w') as f:
+                json.dump(convert_to_serializable(nta_results), f, indent=2)
+            print(f"NTA-IoU评测结果已保存到: {nta_output}")
+
+    if args.task in ["all", "ntl"]:
+        ntl_results = _run_task("ntl", run_ntl_evaluation)
+        if ntl_results:
+            ntl_output = os.path.join(config['output']['metrics'], 'ntl_results.json')
+            with open(ntl_output, 'w') as f:
+                json.dump(convert_to_serializable(ntl_results), f, indent=2)
+            print(f"NTL-IoU评测结果已保存到: {ntl_output}")
+
     # 生成综合报告（自动加载已有的其他任务结果，避免覆盖丢失）
     metrics_dir = config['output']['metrics']
 
@@ -423,13 +517,17 @@ def main():
     sam_results = _load_existing('sam_results.json', sam_results)
     image_metrics_results = _load_existing('image_metrics_results.json', image_metrics_results)
     fvd_results = _load_existing('fvd_results.json', fvd_results)
+    nta_results = _load_existing('nta_results.json', nta_results)
+    ntl_results = _load_existing('ntl_results.json', ntl_results)
 
-    if depth_results or seg_results or sam_results or image_metrics_results or fvd_results:
+    if depth_results or seg_results or sam_results or image_metrics_results or fvd_results or nta_results or ntl_results:
         report_path = os.path.join(metrics_dir, 'evaluation_report.txt')
         generate_report(depth_results, seg_results, report_path,
                        sam_results=sam_results,
                        image_metrics_results=image_metrics_results,
-                       fvd_results=fvd_results)
+                       fvd_results=fvd_results,
+                       nta_results=nta_results,
+                       ntl_results=ntl_results)
         print(f"\n综合报告已保存到: {report_path}")
 
         # 保存完整JSON结果
@@ -440,7 +538,9 @@ def main():
             'segmentation': seg_results,
             'sam': sam_results,
             'image_metrics': image_metrics_results,
-            'fvd': fvd_results
+            'fvd': fvd_results,
+            'nta': nta_results,
+            'ntl': ntl_results,
         }
         full_output = os.path.join(metrics_dir, 'full_results.json')
         with open(full_output, 'w') as f:

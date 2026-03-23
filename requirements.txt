@@ -32,5 +32,13 @@ einops>=0.6.0          # cd-fvd依赖
 # 可选：timm (某些模型backbone需要)
 timm>=0.9.0
 
+# NTA-IoU: YOLO11 目标检测
+ultralytics>=8.3.0             # YOLO11 (Ultralytics)
+
+# NTL-IoU: TwinLiteNet 车道线检测
+# TwinLiteNet 使用 ResNet18 (torchvision内置) + 自定义解码器，无额外依赖
+# 如需使用 Canny+Hough 后备方案，需要 opencv
+opencv-python>=4.5.0           # 可选：NTL后备方案 (Canny边缘检测)
+
 # 可选：accelerate (加速推理)
 accelerate>=0.25.0
