@@ -280,7 +280,7 @@ def _worker_nta(camera: str, pairs: List[Tuple[str, str]],
         detector = get_nta_detector(worker_config)
 
         nta_config = config.get('nta', {})
-        match_iou_threshold = nta_config.get('match_iou_threshold', 0.5)
+        distance_threshold = nta_config.get('distance_threshold', 10.0)
         compute_per_class = nta_config.get('per_class', True)
 
         output_dir = os.path.join(config['output'].get('root', './results'), 'nta_maps')
@@ -299,9 +299,9 @@ def _worker_nta(camera: str, pairs: List[Tuple[str, str]],
             dets_gen = detector.detect(gen_img, filter_classes=TRAFFIC_AGENT_IDS)
             dets_gt = detector.detect(gt_img, filter_classes=TRAFFIC_AGENT_IDS)
 
-            metrics = match_detections(dets_gen, dets_gt, match_iou_threshold)
+            metrics = match_detections(dets_gen, dets_gt, distance_threshold)
             if compute_per_class:
-                per_class = compute_nta_per_class(dets_gen, dets_gt, match_iou_threshold)
+                per_class = compute_nta_per_class(dets_gen, dets_gt, distance_threshold)
                 metrics.update(per_class)
 
             camera_metrics.append(metrics)

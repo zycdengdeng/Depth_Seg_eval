@@ -4,11 +4,11 @@ NTA-IoU (Novel Trajectory Agent IoU) 评测模块
 使用 YOLO11 对生成图像和真值图像进行交通参与者检测，
 比较两者检测结果的一致性来评估生成图像中车辆等目标的真实性。
 
-评测逻辑：
-1. 对gen图像和gt图像分别进行 YOLO11 目标检测
-2. 以gt图像的检测结果作为参考，匹配gen图像的检测框
-3. 计算匹配框对之间的IoU，未匹配的检测框IoU记为0
-4. NTA-IoU = 所有目标的平均IoU
+评测逻辑（与 DriveDreamer4D 论文一致）：
+1. 将图像 resize 到 480×320 后进行 YOLO11 目标检测（conf > 0.5）
+2. 以gt图像的检测结果作为参考，按中心距离为每个gt框找最近的gen检测框
+3. 中心距离 < 阈值时视为匹配，计算匹配框对的IoU，未匹配的gt框IoU记为0
+4. NTA-IoU = 所有gt目标IoU的平均值
 
 适用场景：
 - 自车轨迹（有GT）：评估生成图与GT图中车辆检测一致性
@@ -49,18 +49,21 @@ class YOLO11Detector:
     """
 
     def __init__(self, model_size: str = "l", device: str = "cuda",
-                 conf_threshold: float = 0.25, iou_threshold: float = 0.45):
+                 conf_threshold: float = 0.5, iou_threshold: float = 0.45,
+                 detect_size: Tuple[int, int] = (480, 320)):
         """
         Args:
             model_size: 模型大小 (n/s/m/l/x)
             device: 推理设备
-            conf_threshold: 置信度阈值
+            conf_threshold: 置信度阈值（论文使用0.5）
             iou_threshold: NMS的IoU阈值
+            detect_size: 检测前resize的目标尺寸 (width, height)，论文使用(480, 320)
         """
         self.model_size = model_size
         self.device = device
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
+        self.detect_size = detect_size
         self._load_model()
 
     def _load_model(self):
@@ -79,19 +82,25 @@ class YOLO11Detector:
         """
         检测图像中的目标
 
+        与论文一致：先将图像resize到detect_size再进行检测。
+
         Args:
             image: RGB图像 (H, W, 3), uint8
             filter_classes: 只保留这些类别的检测结果，None则保留所有
 
         Returns:
             detections: 检测结果列表，每个检测包含:
-                - bbox: [x1, y1, x2, y2] 边界框坐标
+                - bbox: [x1, y1, x2, y2] 边界框坐标（在resize后的图像上）
                 - confidence: 置信度
                 - class_id: 类别ID
                 - class_name: 类别名称
         """
+        import cv2
+        # 与论文一致：resize到指定尺寸后检测
+        resized = cv2.resize(image, self.detect_size)
+
         results = self.model(
-            image,
+            resized,
             conf=self.conf_threshold,
             iou=self.iou_threshold,
             verbose=False
@@ -150,46 +159,49 @@ def compute_bbox_iou(box1: List[float], box2: List[float]) -> float:
     return intersection / union
 
 
-def compute_iou_matrix(dets_gen: List[Dict], dets_gt: List[Dict]) -> np.ndarray:
+
+def find_closest_box(gt_box: List[float], gen_boxes: List[List[float]],
+                     distance_threshold: float = 10.0) -> Optional[List[float]]:
     """
-    计算gen和gt检测结果之间的IoU矩阵
+    为gt框找到中心距离最近的gen检测框（与论文一致）
 
     Args:
-        dets_gen: gen图像的检测结果
-        dets_gt: gt图像的检测结果
+        gt_box: [x1, y1, x2, y2] GT边界框
+        gen_boxes: gen检测框列表
+        distance_threshold: 最大中心距离阈值（论文默认10像素）
 
     Returns:
-        iou_matrix: (N_gen, N_gt) IoU矩阵
+        最近的gen检测框，若超出距离阈值则返回None
     """
-    n_gen = len(dets_gen)
-    n_gt = len(dets_gt)
-
-    if n_gen == 0 or n_gt == 0:
-        return np.zeros((n_gen, n_gt))
-
-    iou_matrix = np.zeros((n_gen, n_gt))
-    for i, det_gen in enumerate(dets_gen):
-        for j, det_gt in enumerate(dets_gt):
-            iou_matrix[i, j] = compute_bbox_iou(det_gen['bbox'], det_gt['bbox'])
-
-    return iou_matrix
+    gt_center = [(gt_box[0] + gt_box[2]) / 2, (gt_box[1] + gt_box[3]) / 2]
+    min_distance = distance_threshold
+    closest_box = None
+    for gen_box in gen_boxes:
+        gen_center = [(gen_box[0] + gen_box[2]) / 2, (gen_box[1] + gen_box[3]) / 2]
+        distance = np.linalg.norm(np.array(gt_center) - np.array(gen_center))
+        if distance < min_distance:
+            min_distance = distance
+            closest_box = gen_box
+    return closest_box
 
 
 def match_detections(dets_gen: List[Dict], dets_gt: List[Dict],
-                     iou_threshold: float = 0.5) -> Dict[str, float]:
+                     distance_threshold: float = 10.0) -> Dict[str, float]:
     """
-    匹配gen和gt的检测结果，计算NTA-IoU
+    匹配gen和gt的检测结果，计算NTA-IoU（与论文一致）
 
-    使用贪心匹配（按IoU从高到低依次匹配），保证同类别才能匹配。
+    使用中心距离匹配：对每个gt框，找中心距离最近的gen框，
+    距离 < 阈值时计算IoU，否则IoU=0。
+    NTA-IoU = 所有gt框的平均IoU。
 
     Args:
         dets_gen: gen图像的检测结果
         dets_gt: gt图像的检测结果
-        iou_threshold: 认为匹配成功的最低IoU阈值
+        distance_threshold: 中心距离匹配阈值（像素，论文默认10）
 
     Returns:
         匹配指标字典:
-            - nta_iou: 所有目标的平均IoU（核心指标）
+            - nta_iou: 所有gt目标的平均IoU（核心指标，与论文一致）
             - nta_precision: 匹配上的gen检测 / 总gen检测
             - nta_recall: 匹配上的gt目标 / 总gt目标
             - nta_num_gen: gen图检测到的目标数
@@ -221,45 +233,23 @@ def match_detections(dets_gen: List[Dict], dets_gt: List[Dict],
             'nta_num_matched': 0,
         }
 
-    # 计算IoU矩阵（仅同类别之间计算）
-    iou_matrix = np.zeros((n_gen, n_gt))
-    for i, det_gen in enumerate(dets_gen):
-        for j, det_gt in enumerate(dets_gt):
-            # 仅同类别才计算IoU
-            if det_gen['class_id'] == det_gt['class_id']:
-                iou_matrix[i, j] = compute_bbox_iou(det_gen['bbox'], det_gt['bbox'])
+    # 与论文一致：对每个gt框，按中心距离找最近的gen框
+    gen_boxes = [d['bbox'] for d in dets_gen]
+    iou_values = []
+    num_matched = 0
 
-    # 贪心匹配：按IoU从高到低
-    matched_gen = set()
-    matched_gt = set()
-    matched_ious = []
+    for det_gt in dets_gt:
+        gt_box = det_gt['bbox']
+        closest = find_closest_box(gt_box, gen_boxes, distance_threshold)
+        if closest is not None:
+            iou = compute_bbox_iou(gt_box, closest)
+            iou_values.append(iou)
+            num_matched += 1
+        else:
+            iou_values.append(0)
 
-    # 获取所有非零IoU的索引
-    while True:
-        if iou_matrix.size == 0:
-            break
-        max_iou = iou_matrix.max()
-        if max_iou < iou_threshold:
-            break
-
-        max_idx = np.unravel_index(iou_matrix.argmax(), iou_matrix.shape)
-        i, j = max_idx
-
-        matched_gen.add(i)
-        matched_gt.add(j)
-        matched_ious.append(max_iou)
-
-        # 将已匹配的行列置零
-        iou_matrix[i, :] = 0
-        iou_matrix[:, j] = 0
-
-    num_matched = len(matched_ious)
-
-    # NTA-IoU: 匹配框对的平均IoU
-    # 未匹配的gen检测和未匹配的gt目标都贡献IoU=0
-    total_objects = max(n_gen, n_gt)
-    sum_iou = sum(matched_ious)
-    nta_iou = (sum_iou / total_objects) * 100 if total_objects > 0 else 0.0
+    # NTA-IoU: 所有gt框的平均IoU（与论文一致）
+    nta_iou = np.average(iou_values) * 100 if len(iou_values) > 0 else 0.0
 
     # Precision 和 Recall
     precision = (num_matched / n_gen) * 100 if n_gen > 0 else 0.0
@@ -276,7 +266,7 @@ def match_detections(dets_gen: List[Dict], dets_gt: List[Dict],
 
 
 def compute_nta_per_class(dets_gen: List[Dict], dets_gt: List[Dict],
-                          iou_threshold: float = 0.5) -> Dict[str, float]:
+                          distance_threshold: float = 10.0) -> Dict[str, float]:
     """
     按类别分别计算NTA-IoU
 
@@ -292,7 +282,7 @@ def compute_nta_per_class(dets_gen: List[Dict], dets_gt: List[Dict],
         if len(gen_cls) == 0 and len(gt_cls) == 0:
             continue  # 该类别不存在，跳过
 
-        result = match_detections(gen_cls, gt_cls, iou_threshold)
+        result = match_detections(gen_cls, gt_cls, distance_threshold)
         per_class_results[f'nta_iou_{class_name}'] = result['nta_iou']
 
     return per_class_results
@@ -303,14 +293,17 @@ def get_nta_detector(config: Dict) -> YOLO11Detector:
     nta_config = config.get('nta', {})
     model_size = nta_config.get('model_size', 'l')
     device = nta_config.get('device', 'cuda')
-    conf_threshold = nta_config.get('conf_threshold', 0.25)
+    conf_threshold = nta_config.get('conf_threshold', 0.5)
     iou_threshold = nta_config.get('iou_threshold', 0.45)
+    detect_w = nta_config.get('detect_width', 480)
+    detect_h = nta_config.get('detect_height', 320)
 
     return YOLO11Detector(
         model_size=model_size,
         device=device,
         conf_threshold=conf_threshold,
         iou_threshold=iou_threshold,
+        detect_size=(detect_w, detect_h),
     )
 
 
@@ -345,7 +338,7 @@ def evaluate_nta_consistency(config: Dict,
 
     # 配置
     nta_config = config.get('nta', {})
-    match_iou_threshold = nta_config.get('match_iou_threshold', 0.5)
+    distance_threshold = nta_config.get('distance_threshold', 10.0)
     compute_per_class = nta_config.get('per_class', True)
 
     # 创建输出目录
@@ -374,12 +367,12 @@ def evaluate_nta_consistency(config: Dict,
             dets_gen = detector.detect(gen_img, filter_classes=TRAFFIC_AGENT_IDS)
             dets_gt = detector.detect(gt_img, filter_classes=TRAFFIC_AGENT_IDS)
 
-            # 计算NTA-IoU
-            metrics = match_detections(dets_gen, dets_gt, match_iou_threshold)
+            # 计算NTA-IoU（中心距离匹配，与论文一致）
+            metrics = match_detections(dets_gen, dets_gt, distance_threshold)
 
             # 按类别计算
             if compute_per_class:
-                per_class = compute_nta_per_class(dets_gen, dets_gt, match_iou_threshold)
+                per_class = compute_nta_per_class(dets_gen, dets_gt, distance_threshold)
                 metrics.update(per_class)
 
             camera_metrics.append(metrics)

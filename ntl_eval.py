@@ -4,16 +4,16 @@ NTL-IoU (Novel Trajectory Lane IoU) 评测模块
 使用 TwinLiteNet 对生成图像和真值图像进行车道线检测，
 比较两者检测结果的一致性来评估生成图像中车道线的真实性。
 
-评测逻辑：
+评测逻辑（与 DriveDreamer4D 论文一致）：
 1. 对gen图像和gt图像分别进行 TwinLiteNet 车道线检测
-2. 得到二值化的车道线 mask
-3. 计算两个mask之间的IoU
+2. 得到二值化的车道线 mask（2类：背景+车道线）
+3. 使用混淆矩阵计算 meanIoU（背景IoU与车道线IoU的均值）
 
 适用场景：
 - 自车轨迹（有GT）：评估生成图与GT图中车道线检测一致性
 - 异车轨迹（无GT标注）：用检测模型的预测结果互比，间接评估生成质量
 
-参考: DriveDreamer4D (TwinLiteNet)
+参考: DriveDreamer4D (TwinLiteNet + SegmentationMetric)
 """
 
 import os
@@ -216,39 +216,41 @@ class TwinLiteNetDetector:
 
     def _predict_twinlitenet(self, image: np.ndarray,
                               orig_h: int, orig_w: int) -> Dict[str, np.ndarray]:
-        """使用 TwinLiteNet 预测"""
-        # 预处理
-        img = Image.fromarray(image).resize(
-            (self.input_size[1], self.input_size[0]),
-            Image.BILINEAR
-        )
-        img_tensor = torch.from_numpy(np.array(img)).float() / 255.0
-        img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0)
+        """
+        使用 TwinLiteNet 预测（与论文一致）
 
-        # ImageNet 标准化
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-        img_tensor = (img_tensor - mean) / std
-        img_tensor = img_tensor.to(self.device)
+        与论文一致：不使用 ImageNet 标准化，仅做 /255.0 归一化。
+        论文中使用 cv2 resize + BGR→RGB 转换 + /255.0。
+        """
+        import cv2
+
+        # 与论文一致：使用 cv2.resize
+        img_resized = cv2.resize(image, (self.input_size[1], self.input_size[0]))
+
+        # 与论文一致：RGB→BGR→RGB (论文从 cv2 imread 得到 BGR，再 [:,:,::-1] 转 RGB)
+        # 我们的输入已经是 RGB，转为 BGR 再转回 RGB 以匹配论文的处理流程
+        # 等价于直接使用 RGB 输入
+        img_tensor = img_resized[:, :, ::-1].transpose(2, 0, 1)  # RGB→BGR, HWC→CHW
+        img_tensor = np.ascontiguousarray(img_tensor)
+        img_tensor = torch.from_numpy(img_tensor).unsqueeze(0)
+        img_tensor = img_tensor.to(self.device).float() / 255.0
 
         # 推理
         da_out, lane_out = self.model(img_tensor)
 
-        # 后处理 - sigmoid + 阈值
-        lane_prob = torch.sigmoid(lane_out).squeeze().cpu().numpy()
-        da_prob = torch.sigmoid(da_out).squeeze().cpu().numpy()
+        # 后处理 - 取 argmax（与论文一致，论文用 torch.max）
+        _, da_predict = torch.max(da_out, 1)
+        _, lane_predict = torch.max(lane_out, 1)
+
+        lane_mask = lane_predict.byte().cpu().numpy()[0].astype(bool)
+        da_mask = da_predict.byte().cpu().numpy()[0].astype(bool)
 
         # 上采样到原始大小
-        from PIL import Image as PILImage
-        lane_prob = np.array(PILImage.fromarray(lane_prob).resize(
-            (orig_w, orig_h), PILImage.BILINEAR
-        ))
-        da_prob = np.array(PILImage.fromarray(da_prob).resize(
-            (orig_w, orig_h), PILImage.BILINEAR
-        ))
-
-        lane_mask = lane_prob > 0.5
-        da_mask = da_prob > 0.5
+        if lane_mask.shape != (orig_h, orig_w):
+            lane_mask = cv2.resize(lane_mask.astype(np.uint8), (orig_w, orig_h),
+                                   interpolation=cv2.INTER_NEAREST).astype(bool)
+            da_mask = cv2.resize(da_mask.astype(np.uint8), (orig_w, orig_h),
+                                 interpolation=cv2.INTER_NEAREST).astype(bool)
 
         return {
             'lane_mask': lane_mask,
@@ -297,24 +299,75 @@ class TwinLiteNetDetector:
         }
 
 
+class SegmentationMetric:
+    """
+    语义分割评测指标（与论文一致）
+
+    使用混淆矩阵计算 mIoU，包含背景类和前景类。
+    参考: DriveDreamer4D IOUEval.py
+    """
+
+    def __init__(self, num_class: int = 2):
+        self.num_class = num_class
+        self.confusion_matrix = np.zeros((num_class, num_class))
+
+    def pixel_accuracy(self) -> float:
+        acc = np.diag(self.confusion_matrix).sum() / (self.confusion_matrix.sum() + 1e-12)
+        return acc
+
+    def intersection_over_union(self) -> float:
+        """返回前景类(class=1)的IoU"""
+        intersection = np.diag(self.confusion_matrix)
+        union = (np.sum(self.confusion_matrix, axis=1) +
+                 np.sum(self.confusion_matrix, axis=0) -
+                 np.diag(self.confusion_matrix))
+        iou = intersection / (union + 1e-12)
+        iou[np.isnan(iou)] = 0
+        return float(iou[1])
+
+    def mean_intersection_over_union(self) -> float:
+        """返回所有类别的mIoU（与论文一致的核心指标）"""
+        intersection = np.diag(self.confusion_matrix)
+        union = (np.sum(self.confusion_matrix, axis=1) +
+                 np.sum(self.confusion_matrix, axis=0) -
+                 np.diag(self.confusion_matrix))
+        iou = intersection / (union + 1e-12)
+        iou[np.isnan(iou)] = 0
+        return float(np.nanmean(iou))
+
+    def add_batch(self, predict: np.ndarray, label: np.ndarray):
+        """添加一个batch的预测和标签"""
+        assert predict.shape == label.shape
+        mask = (label >= 0) & (label < self.num_class)
+        count = np.bincount(
+            self.num_class * label[mask].astype(int) + predict[mask].astype(int),
+            minlength=self.num_class ** 2
+        )
+        self.confusion_matrix += count.reshape(self.num_class, self.num_class)
+
+    def reset(self):
+        self.confusion_matrix = np.zeros((self.num_class, self.num_class))
+
+
 def compute_mask_iou(mask1: np.ndarray, mask2: np.ndarray) -> float:
     """
-    计算两个二值mask的IoU
+    计算两个二值mask的mIoU（与论文一致，使用混淆矩阵）
+
+    使用 SegmentationMetric 计算 2 类（背景+前景）的 meanIoU，
+    与 DriveDreamer4D 论文中的 NTL-IoU 计算方式一致。
 
     Args:
-        mask1: 二值mask (H, W), bool
-        mask2: 二值mask (H, W), bool
+        mask1: 预测二值mask (H, W), bool（gen图像检测结果）
+        mask2: 参考二值mask (H, W), bool（gt图像检测结果）
 
     Returns:
-        IoU值 (0-100)
+        mIoU值 (0-100)
     """
-    intersection = np.logical_and(mask1, mask2).sum()
-    union = np.logical_or(mask1, mask2).sum()
-
-    if union == 0:
-        return 100.0  # 都是空mask，视为完美匹配
-
-    return (intersection / union) * 100
+    metric = SegmentationMetric(num_class=2)
+    predict = mask1.astype(int).flatten()
+    label = mask2.astype(int).flatten()
+    metric.add_batch(predict, label)
+    return metric.mean_intersection_over_union() * 100
 
 
 def compute_mask_f1(mask1: np.ndarray, mask2: np.ndarray,
