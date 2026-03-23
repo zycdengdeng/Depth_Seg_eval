@@ -25,7 +25,7 @@ from typing import Dict, List, Tuple, Optional
 from scipy import ndimage
 import json
 
-from utils import load_config, get_image_pairs, load_image, ensure_dir
+from utils import load_config, get_image_pairs, load_image, load_image_pair, ensure_dir
 from metrics import aggregate_metrics, format_metrics_table
 
 
@@ -491,8 +491,7 @@ def evaluate_sam_consistency(config: Dict, save_vis: bool = True,
             filename = os.path.basename(gen_path).replace('.png', '')
 
             # 加载图像
-            gen_img = load_image(gen_path)
-            gt_img = load_image(gt_path)
+            gen_img, gt_img = load_image_pair(gen_path, gt_path)
 
             # 获取SAM边缘图
             edge_gen = sam.get_edge_map(gen_img)

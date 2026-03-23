@@ -17,7 +17,7 @@ import torch
 from typing import Dict, List, Tuple, Optional
 from tqdm import tqdm
 
-from utils import load_config, get_image_pairs, load_image, ensure_dir
+from utils import load_config, get_image_pairs, load_image, load_image_pair, ensure_dir
 from metrics import aggregate_metrics, format_metrics_table
 
 
@@ -181,8 +181,7 @@ def evaluate_image_metrics(config: Dict, save_vis: bool = False) -> Dict[str, Di
         camera_metrics = []
 
         for gen_path, gt_path in tqdm(pairs, desc=f"  {camera}"):
-            gen_img = load_image(gen_path)
-            gt_img = load_image(gt_path)
+            gen_img, gt_img = load_image_pair(gen_path, gt_path)
 
             metrics = evaluator.evaluate_pair(gen_img, gt_img)
             camera_metrics.append(metrics)

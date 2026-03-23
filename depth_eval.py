@@ -20,7 +20,7 @@ from typing import Dict, List, Tuple, Optional
 import json
 
 from utils import (
-    load_config, get_image_pairs, load_image, ensure_dir,
+    load_config, get_image_pairs, load_image, load_image_pair, ensure_dir,
     normalize_depth, align_depth_scale, align_spatial,
     compute_tolerant_metrics, save_depth_visualization
 )
@@ -246,8 +246,7 @@ def evaluate_depth_consistency(config: Dict,
             filename = os.path.basename(gen_path).replace('.png', '')
 
             # 加载图像
-            gen_img = load_image(gen_path)
-            gt_img = load_image(gt_path)
+            gen_img, gt_img = load_image_pair(gen_path, gt_path)
 
             # 深度估计
             depth_gen = estimator.predict(gen_img)

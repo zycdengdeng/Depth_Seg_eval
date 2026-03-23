@@ -64,6 +64,25 @@ def load_image(path: str, size: Optional[Tuple[int, int]] = None) -> np.ndarray:
     return np.array(img)
 
 
+def load_image_pair(gen_path: str, gt_path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    加载 gen/gt 图像对，并将 gt resize 到与 gen 相同的分辨率。
+
+    gen 图像可能是 720x720，gt 图像可能是 3840x2160 或 1920x1080，
+    分辨率不一致会导致像素级比较指标 (PSNR/SSIM/LPIPS) 出错，
+    也会导致感知模型 (深度/分割/SAM) 对不同分辨率输入产生不可比的结果。
+
+    策略：以 gen 尺寸为基准，将 gt resize 到 gen 尺寸。
+    """
+    gen_img = Image.open(gen_path).convert('RGB')
+    gt_img = Image.open(gt_path).convert('RGB')
+
+    if gen_img.size != gt_img.size:
+        gt_img = gt_img.resize(gen_img.size, Image.BILINEAR)
+
+    return np.array(gen_img), np.array(gt_img)
+
+
 def ensure_dir(path: str):
     """确保目录存在"""
     Path(path).mkdir(parents=True, exist_ok=True)

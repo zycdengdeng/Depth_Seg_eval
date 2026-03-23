@@ -26,7 +26,7 @@ from tqdm import tqdm
 from typing import Dict, List, Tuple, Optional
 import json
 
-from utils import load_config, get_image_pairs, load_image, ensure_dir
+from utils import load_config, get_image_pairs, load_image, load_image_pair, ensure_dir
 from metrics import aggregate_metrics, format_metrics_table
 
 
@@ -507,8 +507,7 @@ def evaluate_ntl_consistency(config: Dict,
             filename = os.path.basename(gen_path).replace('.png', '')
 
             # 加载图像
-            gen_img = load_image(gen_path)
-            gt_img = load_image(gt_path)
+            gen_img, gt_img = load_image_pair(gen_path, gt_path)
 
             # TwinLiteNet 检测
             pred_gen = detector.predict(gen_img)

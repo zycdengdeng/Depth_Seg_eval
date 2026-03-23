@@ -25,7 +25,7 @@ from typing import Dict, List, Tuple, Optional
 import json
 
 from utils import (
-    load_config, get_image_pairs, load_image, ensure_dir,
+    load_config, get_image_pairs, load_image, load_image_pair, ensure_dir,
     save_segmentation_visualization, get_cityscapes_palette, CITYSCAPES_CLASSES
 )
 from metrics import (
@@ -329,8 +329,7 @@ def evaluate_segmentation_consistency(config: Dict,
             filename = os.path.basename(gen_path).replace('.png', '')
 
             # 加载图像
-            gen_img = load_image(gen_path)
-            gt_img = load_image(gt_path)
+            gen_img, gt_img = load_image_pair(gen_path, gt_path)
 
             # 语义分割
             seg_gen = segmentor.predict(gen_img)
