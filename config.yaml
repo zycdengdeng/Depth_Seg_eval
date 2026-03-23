@@ -59,7 +59,7 @@ nta:
   device: "cuda"
   conf_threshold: 0.5          # 检测置信度阈值（论文使用0.5）
   iou_threshold: 0.45          # NMS的IoU阈值
-  distance_threshold: 10.0     # 中心距离匹配阈值（像素，论文默认10）
+  distance_threshold: 50.0     # 中心距离匹配阈值（像素，480x320检测图上）；论文默认10，但因gen/gt有时间戳差距，适当放宽
   detect_width: 480            # 检测前resize宽度（论文使用480）
   detect_height: 320           # 检测前resize高度（论文使用320）
   per_class: true              # 是否计算每个交通参与者类别的NTA-IoU
