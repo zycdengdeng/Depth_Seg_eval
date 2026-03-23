@@ -376,15 +376,11 @@ def evaluate_nta_consistency(config: Dict,
 
             camera_metrics.append(metrics)
 
-            # 保存检测可视化
+            # 保存检测可视化（GT vs Gen 对比图）
             if save_vis:
-                _save_detection_vis(
-                    gen_img, dets_gen,
-                    os.path.join(camera_out_dir, f"{filename}_gen_det.png")
-                )
-                _save_detection_vis(
-                    gt_img, dets_gt,
-                    os.path.join(camera_out_dir, f"{filename}_gt_det.png")
+                _save_detection_vis_compare(
+                    gen_img, gt_img, dets_gen, dets_gt, metrics,
+                    os.path.join(camera_out_dir, f"{filename}_compare.png")
                 )
 
         # 汇总该相机的指标
@@ -407,37 +403,150 @@ def evaluate_nta_consistency(config: Dict,
     return results
 
 
+_DET_COLORS = {
+    0: (220, 20, 60),    # person - 红
+    1: (119, 11, 32),    # bicycle - 深红
+    2: (0, 0, 142),      # car - 蓝
+    3: (0, 0, 230),      # motorcycle - 亮蓝
+    5: (0, 60, 100),     # bus - 深青
+    7: (0, 0, 70),       # truck - 深蓝
+}
+
+
+def _draw_detections(draw, detections: List[Dict], font):
+    """在ImageDraw上绘制检测框"""
+    for det in detections:
+        bbox = det['bbox']
+        cls_id = det['class_id']
+        color = _DET_COLORS.get(cls_id, (255, 255, 255))
+        label = f"{det['class_name']} {det['confidence']:.2f}"
+
+        draw.rectangle(bbox, outline=color, width=2)
+        text_bbox = draw.textbbox((bbox[0], bbox[1] - 14), label, font=font)
+        draw.rectangle(text_bbox, fill=color)
+        draw.text((bbox[0], bbox[1] - 14), label, fill=(255, 255, 255), font=font)
+
+
 def _save_detection_vis(image: np.ndarray, detections: List[Dict],
                         save_path: str):
-    """保存检测结果可视化"""
+    """保存单张检测结果可视化（保留向后兼容）"""
     from PIL import Image as PILImage, ImageDraw, ImageFont
 
     img = PILImage.fromarray(image)
     draw = ImageDraw.Draw(img)
 
-    # 不同类别的颜色
-    colors = {
-        0: (220, 20, 60),    # person - 红
-        1: (119, 11, 32),    # bicycle - 深红
-        2: (0, 0, 142),      # car - 蓝
-        3: (0, 0, 230),      # motorcycle - 亮蓝
-        5: (0, 60, 100),     # bus - 深青
-        7: (0, 0, 70),       # truck - 深蓝
-    }
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 12)
+    except (OSError, IOError):
+        font = ImageFont.load_default()
 
-    for det in detections:
-        bbox = det['bbox']
-        cls_id = det['class_id']
-        color = colors.get(cls_id, (255, 255, 255))
-        label = f"{det['class_name']} {det['confidence']:.2f}"
-
-        draw.rectangle(bbox, outline=color, width=2)
-        # 标签背景
-        text_bbox = draw.textbbox((bbox[0], bbox[1] - 12), label)
-        draw.rectangle(text_bbox, fill=color)
-        draw.text((bbox[0], bbox[1] - 12), label, fill=(255, 255, 255))
-
+    _draw_detections(draw, detections, font)
     img.save(save_path)
+
+
+def _save_detection_vis_compare(gen_img: np.ndarray, gt_img: np.ndarray,
+                                dets_gen: List[Dict], dets_gt: List[Dict],
+                                metrics: Dict[str, float],
+                                save_path: str):
+    """
+    保存GT与Gen的目标检测对比可视化（拼成一张图）
+
+    左列：GT 原图 + 检测框
+    右列：Gen 原图 + 检测框
+    底部：检测统计和匹配指标
+    """
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+
+    h, w = gt_img.shape[:2]
+
+    # 尝试加载字体
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 13)
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", 16)
+    except (OSError, IOError):
+        font = ImageFont.load_default()
+        font_title = font
+
+    # 绘制GT检测图
+    gt_pil = PILImage.fromarray(gt_img)
+    gt_draw = ImageDraw.Draw(gt_pil)
+    _draw_detections(gt_draw, dets_gt, font)
+
+    # 绘制Gen检测图
+    gen_pil = PILImage.fromarray(gen_img)
+    gen_draw = ImageDraw.Draw(gen_pil)
+    _draw_detections(gen_draw, dets_gen, font)
+
+    # 拼接：左GT右Gen + 底部信息
+    info_h = 80
+    canvas_w = w * 2 + 4
+    canvas_h = h + info_h
+    canvas = PILImage.new('RGB', (canvas_w, canvas_h), (0, 0, 0))
+
+    canvas.paste(gt_pil, (0, 0))
+    canvas.paste(gen_pil, (w + 4, 0))
+
+    draw = ImageDraw.Draw(canvas)
+
+    # 中间分隔线
+    draw.rectangle([w, 0, w + 3, h - 1], fill=(255, 255, 255))
+
+    # 标题（左上角半透明标签）
+    draw.text((10, 5), f"GT ({len(dets_gt)} objects)", fill=(255, 255, 0), font=font_title)
+    draw.text((w + 14, 5), f"Gen ({len(dets_gen)} objects)", fill=(255, 255, 0), font=font_title)
+
+    # 底部信息区（深灰背景）
+    draw.rectangle([0, h, canvas_w, canvas_h], fill=(40, 40, 40))
+
+    info_y = h + 6
+
+    # 按类别统计检测数
+    def count_by_class(dets):
+        counts = {}
+        for d in dets:
+            name = d['class_name']
+            counts[name] = counts.get(name, 0) + 1
+        return counts
+
+    gt_counts = count_by_class(dets_gt)
+    gen_counts = count_by_class(dets_gen)
+    all_classes = sorted(set(list(gt_counts.keys()) + list(gen_counts.keys())))
+
+    class_str = "  ".join(
+        f"{cls}: GT={gt_counts.get(cls, 0)} Gen={gen_counts.get(cls, 0)}"
+        for cls in all_classes
+    )
+    if not class_str:
+        class_str = "(no detections)"
+
+    # 指标
+    nta_iou = metrics.get('nta_iou', 0)
+    nta_prec = metrics.get('nta_precision', 0)
+    nta_recall = metrics.get('nta_recall', 0)
+    n_matched = metrics.get('nta_num_matched', 0)
+    n_gt = metrics.get('nta_num_gt', 0)
+    n_gen = metrics.get('nta_num_gen', 0)
+
+    line1 = f"GT: {n_gt} objects  |  Gen: {n_gen} objects  |  Matched: {n_matched}  |  {class_str}"
+    line2 = f"NTA-IoU: {nta_iou:.1f}%  |  Precision: {nta_prec:.1f}%  |  Recall: {nta_recall:.1f}%"
+
+    # 按类别IoU
+    per_class_ious = []
+    for cls in all_classes:
+        key = f"nta_iou_{cls}"
+        if key in metrics:
+            per_class_ious.append(f"{cls}: {metrics[key]:.1f}%")
+    if per_class_ious:
+        line3 = "Per-class IoU:  " + "  |  ".join(per_class_ious)
+    else:
+        line3 = ""
+
+    draw.text((10, info_y), line1, fill=(200, 200, 200), font=font)
+    draw.text((10, info_y + 20), line2, fill=(0, 255, 150), font=font)
+    if line3:
+        draw.text((10, info_y + 40), line3, fill=(180, 180, 255), font=font)
+
+    canvas.save(save_path)
 
 
 def main():

@@ -271,7 +271,7 @@ def _worker_nta(camera: str, pairs: List[Tuple[str, str]],
 
         from nta_eval import (get_nta_detector, match_detections,
                               compute_nta_per_class, TRAFFIC_AGENT_IDS,
-                              _save_detection_vis)
+                              _save_detection_vis_compare)
         from utils import load_image, ensure_dir
         from tqdm import tqdm
 
@@ -307,10 +307,9 @@ def _worker_nta(camera: str, pairs: List[Tuple[str, str]],
             camera_metrics.append(metrics)
 
             if save_vis:
-                _save_detection_vis(gen_img, dets_gen,
-                    os.path.join(camera_out_dir, f"{filename}_gen_det.png"))
-                _save_detection_vis(gt_img, dets_gt,
-                    os.path.join(camera_out_dir, f"{filename}_gt_det.png"))
+                _save_detection_vis_compare(
+                    gen_img, gt_img, dets_gen, dets_gt, metrics,
+                    os.path.join(camera_out_dir, f"{filename}_compare.png"))
 
         result_dict[camera] = aggregate_metrics(camera_metrics)
         print(f"\n  [GPU:{gpu_id}] {camera} 完成!")
