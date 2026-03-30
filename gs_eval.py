@@ -90,6 +90,10 @@ METHODS = {
         "root": "/mnt/myn/project/Co-Adaptation-of-3DGS/output",
         "type": "timestamp",
     },
+    "AD-GS": {
+        "root": "/mnt/myn/project/AD-GS/output",
+        "type": "timestamp",
+    },
     "SparseGS": {
         "root": "/mnt/zyc_wzh/SparseGS/output/car_road",
         "type": "scene_dist",
