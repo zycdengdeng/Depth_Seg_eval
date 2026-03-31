@@ -435,6 +435,61 @@ def run_ntl_eval(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
     return results
 
 
+def run_sam_eval(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
+    """运行SAM结构一致性评测（边缘F1）"""
+    from sam_eval import SAMSegmentorFast, compute_edge_consistency
+    from tqdm import tqdm
+
+    sam = SAMSegmentorFast(model_size="large", device=device)
+    results = []
+
+    for pair in tqdm(pairs, desc="    SAM边缘"):
+        gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"])
+        edge_gen = sam.get_edge_map(gen_img)
+        edge_gt = sam.get_edge_map(gt_img)
+
+        metrics = compute_edge_consistency(edge_gen, edge_gt, tolerance=3)
+        metrics.update({
+            "clip": pair["clip"],
+            "distance": pair["distance"],
+            "camera": pair["camera"],
+        })
+        results.append(metrics)
+
+    return results
+
+
+def run_fid_eval(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
+    """计算FID（需要把图像按方法收集到临时目录）
+
+    FID是分布级指标，对整个图像集合计算一个值。
+    这里返回单条记录，aggregate时直接取值即可。
+    """
+    from image_metrics_eval import compute_fid_for_camera
+    import tempfile
+    import shutil
+    from PIL import Image
+
+    # 将gen和gt图像软链接到临时目录
+    tmp_dir = tempfile.mkdtemp(prefix="gs_fid_")
+    gen_dir = os.path.join(tmp_dir, "gen")
+    gt_dir = os.path.join(tmp_dir, "gt")
+    os.makedirs(gen_dir)
+    os.makedirs(gt_dir)
+
+    try:
+        for i, pair in enumerate(pairs):
+            # FID需要同格式图像，统一转png
+            gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"])
+            Image.fromarray(gen_img).save(os.path.join(gen_dir, f"{i:06d}.png"))
+            Image.fromarray(gt_img).save(os.path.join(gt_dir, f"{i:06d}.png"))
+
+        fid_score = compute_fid_for_camera(gen_dir, gt_dir, device=device)
+        return [{"fid": fid_score, "clip": "all", "distance": "all", "camera": "all"}]
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 # ============== 结果汇总 ==============
 
 def aggregate_results(raw_results: List[Dict],
@@ -556,8 +611,10 @@ TASK_RUNNERS = {
     "image_metrics": run_image_metrics,
     "depth": run_depth_eval,
     "seg": run_seg_eval,
+    "sam": run_sam_eval,
     "nta": run_nta_eval,
     "ntl": run_ntl_eval,
+    "fid": run_fid_eval,
 }
 
 def main():
@@ -566,7 +623,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--task", type=str, default="all",
-                        choices=["all", "image_metrics", "depth", "seg", "nta", "ntl"],
+                        choices=["all", "image_metrics", "depth", "seg", "sam", "nta", "ntl", "fid"],
                         help="评测任务")
     parser.add_argument("--methods", nargs="+", default=None,
                         choices=list(METHODS.keys()),
