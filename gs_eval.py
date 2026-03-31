@@ -123,7 +123,8 @@ def get_gen_path(method_name: str, clip: str, distance: str, camera: str) -> str
     elif mtype == "scene_dist":
         scene_num = _clip_to_scene_num(clip)
         scene_dir = f"scene{scene_num}_{distance}"
-        return os.path.join(root, scene_dir, "vehicle_renders", camera, "render.png")
+        return os.path.join(root, scene_dir, f"vehicle_render_{distance}",
+                            "vehicle_renders", camera, "render.png")
 
     elif mtype == "scene_flat":
         scene_num = _clip_to_scene_num(clip)
