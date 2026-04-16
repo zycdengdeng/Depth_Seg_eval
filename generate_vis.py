@@ -147,9 +147,9 @@ def process_gt(clip: str, distances: List[str], cameras: List[str],
     print(f"  处理了 {count} 张")
 
 
-def process_tf_ours(clip_num: str, distances: List[str], cameras: List[str],
+def process_tf_ours(clip_num: str, cameras: List[str],
                     depth_model, seg_model, output_dir: str):
-    """处理 TF (Ours) 方法 — 从 MP4 抽帧，取中间帧"""
+    """处理 TF (Ours) 方法 — 从 MP4 抽全部 29 帧"""
     if clip_num not in CLIP_TS_RANGES:
         print(f"\n[TF_Ours] clip {clip_num} 不在 tf_eval 的时间戳表中，跳过")
         return
@@ -166,34 +166,21 @@ def process_tf_ours(clip_num: str, distances: List[str], cameras: List[str],
         video_path = os.path.join(TF_GEN_ROOT, clip_dir,
                                   f"{cam_long}_generated.mp4")
         if not os.path.exists(video_path):
+            print(f"  {cam}: 视频不存在 {video_path}")
             continue
 
         frames = extract_frames(video_path)
         if not frames:
             continue
 
-        frame_timestamps = compute_frame_timestamps(clip_num, len(frames))
-
-        # 为每个 distance 找最近的帧
-        ts_info = CLIP_TS_RANGES[clip_num]
-        dist_target_ts = {
-            "near": ts_info["start"],
-            "middle": (ts_info["start"] + ts_info["end"]) // 2,
-            "far": ts_info["end"],
-        }
-
-        for dist in distances:
-            target_ts = dist_target_ts[dist]
-            # 找最近的帧
-            diffs = [abs(ft - target_ts) for ft in frame_timestamps]
-            best_idx = diffs.index(min(diffs))
-            rgb = frames[best_idx]
-
-            tf_dir = os.path.join(output_dir, "TF_Ours", dist)
-            process_image(rgb, depth_model, seg_model, tf_dir, cam)
+        # 保存所有帧（按帧号命名）
+        for frame_idx, rgb in enumerate(frames):
+            tf_dir = os.path.join(output_dir, "TF_Ours", cam)
+            process_image(rgb, depth_model, seg_model, tf_dir,
+                          f"frame{frame_idx:03d}")
             count += 1
 
-    print(f"  处理了 {count} 张")
+    print(f"  处理了 {count} 张（{len(cameras)} 相机 x {len(frames)} 帧）")
 
 
 def main():
@@ -251,9 +238,9 @@ def main():
         process_gs_methods(clip_full, distances, cameras,
                            depth_model, seg_model, output_dir)
 
-    # 处理 TF (Ours)
+    # 处理 TF (Ours) — 全部帧，不分 distance
     if not args.skip_tf:
-        process_tf_ours(clip_num, distances, cameras,
+        process_tf_ours(clip_num, cameras,
                         depth_model, seg_model, output_dir)
 
     print(f"\n完成！所有结果保存在 {output_dir}")
