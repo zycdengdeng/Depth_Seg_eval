@@ -269,17 +269,18 @@ def collect_image_pairs(clips: List[str] = None,
 # ============== 图像加载 ==============
 
 def load_pair(pair: Dict) -> Tuple[np.ndarray, np.ndarray]:
-    """加载 gen 帧和 GT 图像，resize GT 到 gen 尺寸"""
-    from PIL import Image
+    """加载 gen 帧和 GT 图像，对GT去畸变后resize到gen尺寸"""
+    from undistort import load_gt_undistorted
 
     gen_img = pair["gen_frame"]
-    gt_img = Image.open(pair["gt_path"]).convert('RGB')
-
     gen_h, gen_w = gen_img.shape[:2]
-    if gt_img.size != (gen_w, gen_h):
-        gt_img = gt_img.resize((gen_w, gen_h), Image.BILINEAR)
 
-    return gen_img, np.array(gt_img)
+    gt_arr = load_gt_undistorted(
+        pair["gt_path"], pair["camera"],
+        target_size=(gen_w, gen_h)
+    )
+
+    return gen_img, gt_arr
 
 
 # ============== 评测任务 ==============

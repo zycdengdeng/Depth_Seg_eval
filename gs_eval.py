@@ -279,14 +279,29 @@ def collect_image_pairs(methods: List[str] = None,
 
 # ============== 评测执行 ==============
 
-def load_image_pair(gen_path: str, gt_path: str) -> Tuple[np.ndarray, np.ndarray]:
-    """加载图像对，将GT resize到gen尺寸"""
+def load_image_pair(gen_path: str, gt_path: str,
+                    camera: str = None) -> Tuple[np.ndarray, np.ndarray]:
+    """加载图像对，对GT去畸变后resize到gen尺寸
+
+    Args:
+        gen_path: 渲染图像路径（已去畸变的 1280x720）
+        gt_path: GT 图像路径（原始带畸变）
+        camera: 相机短名（FL/FN等），用于去畸变。None则跳过去畸变。
+    """
     from PIL import Image
     gen_img = Image.open(gen_path).convert('RGB')
-    gt_img = Image.open(gt_path).convert('RGB')
-    if gen_img.size != gt_img.size:
-        gt_img = gt_img.resize(gen_img.size, Image.BILINEAR)
-    return np.array(gen_img), np.array(gt_img)
+    gen_w, gen_h = gen_img.size
+
+    if camera is not None:
+        from undistort import load_gt_undistorted
+        gt_arr = load_gt_undistorted(gt_path, camera, target_size=(gen_w, gen_h))
+    else:
+        gt_img = Image.open(gt_path).convert('RGB')
+        if gt_img.size != gen_img.size:
+            gt_img = gt_img.resize(gen_img.size, Image.BILINEAR)
+        gt_arr = np.array(gt_img)
+
+    return np.array(gen_img), gt_arr
 
 
 def run_image_metrics(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
@@ -298,7 +313,7 @@ def run_image_metrics(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
     results = []
 
     for pair in tqdm(pairs, desc="    图像质量"):
-        gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"])
+        gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"], camera=pair["camera"])
         metrics = evaluator.evaluate_pair(gen_img, gt_img)
         metrics.update({
             "clip": pair["clip"],
@@ -324,7 +339,7 @@ def run_depth_eval(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
     results = []
 
     for pair in tqdm(pairs, desc="    深度一致性"):
-        gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"])
+        gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"], camera=pair["camera"])
         depth_gen = depth_model.predict(gen_img)
         depth_gt = depth_model.predict(gt_img)
 
@@ -361,7 +376,7 @@ def run_seg_eval(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
     results = []
 
     for pair in tqdm(pairs, desc="    语义分割"):
-        gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"])
+        gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"], camera=pair["camera"])
         seg_gen = seg_model.predict(gen_img)
         seg_gt = seg_model.predict(gt_img)
 
@@ -388,7 +403,7 @@ def run_nta_eval(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
     results = []
 
     for pair in tqdm(pairs, desc="    NTA-IoU"):
-        gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"])
+        gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"], camera=pair["camera"])
         dets_gen = detector.detect(gen_img, filter_classes=TRAFFIC_AGENT_IDS)
         dets_gt = detector.detect(gt_img, filter_classes=TRAFFIC_AGENT_IDS)
 
@@ -412,7 +427,7 @@ def run_ntl_eval(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
     results = []
 
     for pair in tqdm(pairs, desc="    NTL-IoU"):
-        gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"])
+        gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"], camera=pair["camera"])
         pred_gen = detector.predict(gen_img)
         pred_gt = detector.predict(gt_img)
 
@@ -444,7 +459,7 @@ def run_sam_eval(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
     results = []
 
     for pair in tqdm(pairs, desc="    SAM边缘"):
-        gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"])
+        gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"], camera=pair["camera"])
         edge_gen = sam.get_edge_map(gen_img)
         edge_gt = sam.get_edge_map(gt_img)
 
@@ -480,7 +495,7 @@ def run_fid_eval(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
     try:
         for i, pair in enumerate(pairs):
             # FID需要同格式图像，统一转png
-            gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"])
+            gen_img, gt_img = load_image_pair(pair["gen_path"], pair["gt_path"], camera=pair["camera"])
             Image.fromarray(gen_img).save(os.path.join(gen_dir, f"{i:06d}.png"))
             Image.fromarray(gt_img).save(os.path.join(gt_dir, f"{i:06d}.png"))
 

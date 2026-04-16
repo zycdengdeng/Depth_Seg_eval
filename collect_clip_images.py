@@ -45,8 +45,11 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     print(f"输出目录: {output_dir}\n")
 
-    # 复制 GT 图像
-    print("[GT]")
+    # 复制 GT 图像（去畸变 + resize 到 1280x720）
+    from undistort import load_gt_undistorted
+    import cv2
+
+    print("[GT] (去畸变 + resize 到 1280x720)")
     gt_count = 0
     gt_missing = 0
     for dist in DISTANCES:
@@ -57,10 +60,11 @@ def main():
                 continue
             dst_dir = os.path.join(output_dir, "gt", dist)
             os.makedirs(dst_dir, exist_ok=True)
-            # 保留原始扩展名（GT 是 .jpg）
-            ext = os.path.splitext(gt_path)[1]
-            dst = os.path.join(dst_dir, f"{cam}{ext}")
-            shutil.copy2(gt_path, dst)
+            dst = os.path.join(dst_dir, f"{cam}.png")
+            # 去畸变 + resize
+            gt_rgb = load_gt_undistorted(gt_path, cam, target_size=(1280, 720))
+            gt_bgr = cv2.cvtColor(gt_rgb, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(dst, gt_bgr)
             gt_count += 1
     print(f"  复制了 {gt_count} 张 (缺失 {gt_missing})")
 
