@@ -502,13 +502,10 @@ def convert_to_serializable(obj):
 def main():
     parser = argparse.ArgumentParser(description="多视角一致性评测")
     parser.add_argument("--source", type=str, required=True,
-                        choices=["gs", "tf", "gt"],
-                        help="数据来源: gs(GS方法), tf(TF/Ours), gt(GT)")
-    parser.add_argument("--clip", type=str, required=True,
-                        help="clip 编号或完整名")
-    parser.add_argument("--distance", type=str, default="middle",
-                        choices=["near", "middle", "far"],
-                        help="距离（GS和GT用，TF忽略）")
+                        choices=["gs", "tf", "gt", "all"],
+                        help="数据来源: gs(GS方法), tf(TF/Ours), gt(GT), all(全部)")
+    parser.add_argument("--clips", nargs="+", default=None,
+                        help="clip 编号列表（默认全部）")
     parser.add_argument("--methods", nargs="+", default=None,
                         help="GS方法名（默认全部）")
     parser.add_argument("--device", type=str, default="cuda")
@@ -516,88 +513,164 @@ def main():
                         default="./results/multiview_eval")
     args = parser.parse_args()
 
-    from gs_eval import CLIP_TIMESTAMPS
-
-    # 解析 clip 名
-    matching = [c for c in CLIP_TIMESTAMPS
-                if c == args.clip or c.startswith(f"{args.clip}_")]
-    if not matching:
-        print(f"错误: clip '{args.clip}' 不在 CLIP_TIMESTAMPS 中")
-        return
-    clip_full = matching[0]
-    clip_num = clip_full.split("_")[0]
+    from gs_eval import CLIP_TIMESTAMPS, METHODS, DISTANCES, CAMERAS, get_gen_path
+    from tf_eval import CLIP_TS_RANGES
+    from metrics import aggregate_metrics
+    from PIL import Image
+    from tqdm import tqdm
 
     os.makedirs(args.output_dir, exist_ok=True)
 
+    # 确定要跑的 source
+    sources = ["gs", "tf", "gt"] if args.source == "all" else [args.source]
+
+    # 确定 clips
+    if args.clips:
+        gs_clips = []
+        for c in args.clips:
+            matching = [full for full in CLIP_TIMESTAMPS
+                        if full == c or full.startswith(f"{c}_")]
+            gs_clips.extend(matching)
+        tf_clip_nums = [c for c in args.clips if c in CLIP_TS_RANGES
+                        or c.split("_")[0] in CLIP_TS_RANGES]
+    else:
+        gs_clips = list(CLIP_TIMESTAMPS.keys())
+        tf_clip_nums = list(CLIP_TS_RANGES.keys())
+
     print("=" * 70)
-    print("多视角一致性评测")
-    print(f"Clip: {clip_full}, Distance: {args.distance}")
+    print("多视角一致性评测（批量）")
+    print(f"来源: {sources}")
+    print(f"GS clips: {len(gs_clips)}, TF clips: {len(tf_clip_nums)}")
     print(f"相邻对: {[f'{a}↔{b}' for a, b in ADJACENT_PAIRS]}")
     print("=" * 70)
 
-    all_results = {}
+    # 收集每个 source 的所有结果: {source_name: [per_sample_metrics_dict, ...]}
+    all_raw_results = defaultdict(list)
 
-    if args.source in ["gs", "gt"]:
-        # GT
-        if args.source == "gt":
-            print("\n收集 GT 图像...")
-            gt_imgs = collect_gt_images(clip_full, args.distance)
-            if gt_imgs:
-                print(f"  GT: {len(gt_imgs)} 视角")
-                print("\n评测 GT 多视角一致性...")
-                all_results["GT"] = evaluate_multiview_consistency(
-                    gt_imgs, args.device)
-
-        # GS 方法
-        if args.source == "gs":
-            print("\n收集 GS 方法图像...")
-            gs_all = collect_gs_images(clip_full, args.distance)
-            methods = args.methods or list(gs_all.keys())
-            for method in methods:
-                if method not in gs_all:
+    # ---- GT ----
+    if "gt" in sources:
+        print("\n" + "=" * 50)
+        print("评测 GT 多视角一致性")
+        print("=" * 50)
+        for clip_full in tqdm(gs_clips, desc="GT clips"):
+            for dist in DISTANCES:
+                gt_imgs = collect_gt_images(clip_full, dist)
+                if len(gt_imgs) < 2:
                     continue
-                imgs = gs_all[method]
-                print(f"\n评测 {method} 多视角一致性 ({len(imgs)} 视角)...")
-                all_results[method] = evaluate_multiview_consistency(
-                    imgs, args.device)
+                pair_results = evaluate_multiview_consistency(
+                    gt_imgs, args.device)
+                for pair_name, metrics in pair_results.items():
+                    metrics["clip"] = clip_full
+                    metrics["distance"] = dist
+                    metrics["pair"] = pair_name
+                    all_raw_results["GT"].append(metrics)
 
-    elif args.source == "tf":
-        print("\n收集 TF (Ours) 图像...")
-        tf_imgs = collect_tf_images(clip_num)
-        if tf_imgs:
-            print(f"  TF_Ours: {len(tf_imgs)} 视角")
-            print("\n评测 TF_Ours 多视角一致性...")
-            all_results["TF_Ours"] = evaluate_multiview_consistency(
+    # ---- GS 方法 ----
+    if "gs" in sources:
+        methods_to_run = args.methods or list(METHODS.keys())
+        for method in methods_to_run:
+            print(f"\n{'=' * 50}")
+            print(f"评测 {method} 多视角一致性")
+            print("=" * 50)
+            for clip_full in tqdm(gs_clips, desc=method):
+                for dist in DISTANCES:
+                    path_test = get_gen_path(method, clip_full, dist, "FL")
+                    if not os.path.exists(path_test):
+                        continue
+                    gs_imgs = {}
+                    for cam in CAMERAS:
+                        p = get_gen_path(method, clip_full, dist, cam)
+                        if os.path.exists(p):
+                            gs_imgs[cam] = np.array(Image.open(p).convert('RGB'))
+                    if len(gs_imgs) < 2:
+                        continue
+                    pair_results = evaluate_multiview_consistency(
+                        gs_imgs, args.device)
+                    for pair_name, metrics in pair_results.items():
+                        metrics["clip"] = clip_full
+                        metrics["distance"] = dist
+                        metrics["pair"] = pair_name
+                        all_raw_results[method].append(metrics)
+
+    # ---- TF (Ours) ----
+    if "tf" in sources:
+        print(f"\n{'=' * 50}")
+        print("评测 TF_Ours 多视角一致性")
+        print("=" * 50)
+        for clip_num in tqdm(tf_clip_nums, desc="TF_Ours"):
+            cn = clip_num.split("_")[0] if "_" in clip_num else clip_num
+            tf_imgs = collect_tf_images(cn)
+            if len(tf_imgs) < 2:
+                continue
+            pair_results = evaluate_multiview_consistency(
                 tf_imgs, args.device)
-
-    # 打印结果
-    if all_results:
-        print("\n" + "=" * 70)
-        print("结果汇总")
-        print("=" * 70)
-
-        for source_name, pair_results in all_results.items():
-            print(f"\n[{source_name}]")
             for pair_name, metrics in pair_results.items():
-                print(f"  {pair_name}:")
-                for k, v in metrics.items():
-                    if isinstance(v, float):
-                        print(f"    {k:<30} {v:.4f}")
-                    else:
-                        print(f"    {k:<30} {v}")
+                metrics["clip"] = cn
+                metrics["distance"] = "video"
+                metrics["pair"] = pair_name
+                all_raw_results["TF_Ours"].append(metrics)
 
-        # 保存
-        output_path = os.path.join(
-            args.output_dir,
-            f"multiview_{args.source}_{clip_num}_{args.distance}.json")
-        with open(output_path, 'w') as f:
-            json.dump(convert_to_serializable({
-                "timestamp": datetime.now().isoformat(),
-                "clip": clip_full,
-                "distance": args.distance,
-                "results": all_results,
-            }), f, indent=2)
-        print(f"\n结果已保存: {output_path}")
+    # ---- 汇总并打印 ----
+    if not all_raw_results:
+        print("没有结果！")
+        return
+
+    meta_keys = {"clip", "distance", "pair"}
+
+    print("\n" + "=" * 70)
+    print("结果汇总（所有 clip 平均）")
+    print("=" * 70)
+
+    summary = {}
+    for source_name, raw_list in all_raw_results.items():
+        metric_list = [{k: v for k, v in m.items() if k not in meta_keys}
+                       for m in raw_list]
+        agg = aggregate_metrics(metric_list)
+        summary[source_name] = agg
+
+        print(f"\n[{source_name}] ({len(raw_list)} 对)")
+        for k, v in sorted(agg.items()):
+            if k.endswith("_std"):
+                continue
+            std_key = f"{k}_std"
+            if isinstance(v, float):
+                if std_key in agg:
+                    print(f"  {k:<35} {v:>10.4f} ± {agg[std_key]:.4f}")
+                else:
+                    print(f"  {k:<35} {v:>10.4f}")
+            else:
+                print(f"  {k:<35} {v:>10}")
+
+    # 按视角对汇总
+    print("\n" + "-" * 70)
+    print("按视角对分组")
+    print("-" * 70)
+
+    for source_name, raw_list in all_raw_results.items():
+        by_pair = defaultdict(list)
+        for m in raw_list:
+            by_pair[m["pair"]].append(
+                {k: v for k, v in m.items() if k not in meta_keys})
+        print(f"\n[{source_name}]")
+        for pair_name in ["FL_FW", "FR_FW", "FN_FW", "RL_RN", "RR_RN"]:
+            if pair_name not in by_pair:
+                continue
+            agg = aggregate_metrics(by_pair[pair_name])
+            reproj = agg.get("reproj_warp_psnr", float('nan'))
+            inlier = agg.get("loftr_inlier_ratio", float('nan'))
+            matches = agg.get("loftr_num_matches", 0)
+            print(f"  {pair_name}: warp_psnr={reproj:.2f}  "
+                  f"loftr_inlier={inlier:.1f}%  matches={matches:.0f}")
+
+    # 保存
+    output_path = os.path.join(args.output_dir, "multiview_results.json")
+    with open(output_path, 'w') as f:
+        json.dump(convert_to_serializable({
+            "timestamp": datetime.now().isoformat(),
+            "summary": summary,
+            "raw": {k: v for k, v in all_raw_results.items()},
+        }), f, indent=2)
+    print(f"\n结果已保存: {output_path}")
 
 
 if __name__ == "__main__":
