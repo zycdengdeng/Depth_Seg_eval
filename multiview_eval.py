@@ -354,6 +354,110 @@ def loftr_matching_consistency(img_a: np.ndarray, img_b: np.ndarray,
     }
 
 
+# ============== MV-SSIM (多视角重叠区域 SSIM) ==============
+
+def compute_mv_ssim(img_a: np.ndarray, img_b: np.ndarray,
+                    depth_a: np.ndarray,
+                    cam_a: str, cam_b: str,
+                    calib_dir: str = DEFAULT_CALIB_DIR
+                    ) -> Dict[str, float]:
+    """计算 MV-SSIM：将视角A通过深度warp到视角B，在重叠区域计算SSIM
+
+    与文献一致（Cosmos-Drive-Dreams, RiskMV-DPO等），
+    评测相邻视角重叠区域的像素级一致性。
+
+    Returns:
+        mv_ssim: 重叠区域的 SSIM (0-1, 越高越好)
+        mv_psnr: 重叠区域的 PSNR (dB, 越高越好)
+        mv_overlap: 重叠像素比例 (%)
+    """
+    from skimage.metrics import structural_similarity
+
+    h, w = img_a.shape[:2]
+    nK_a, _ = load_intrinsics(cam_a, calib_dir, w, h)
+    nK_b, _ = load_intrinsics(cam_b, calib_dir, w, h)
+    R_a2b, t_a2b = get_relative_pose(cam_a, cam_b, calib_dir)
+
+    # 像素网格
+    u, v = np.meshgrid(np.arange(w), np.arange(h))
+    ones = np.ones_like(u)
+    uv1 = np.stack([u, v, ones], axis=-1).reshape(-1, 3).T
+
+    # 反投影 A → 3D → 投影到 B
+    depth_flat = depth_a.flatten()
+    pts_a = np.linalg.inv(nK_a) @ uv1 * depth_flat[None, :]
+    pts_b = R_a2b @ pts_a + t_a2b[:, None]
+
+    uv_b = nK_b @ pts_b
+    z_b = uv_b[2, :]
+    uv_b = uv_b[:2, :] / (z_b[None, :] + 1e-8)
+
+    u_b = uv_b[0, :].astype(int)
+    v_b = uv_b[1, :].astype(int)
+
+    valid = (depth_flat > 0.1) & (z_b > 0.1) & \
+            (u_b >= 0) & (u_b < w) & (v_b >= 0) & (v_b < h)
+
+    if valid.sum() < 1000:
+        return {'mv_ssim': float('nan'), 'mv_psnr': float('nan'),
+                'mv_overlap': 0.0}
+
+    # 构建 warp 图和 mask
+    warp_img = np.zeros_like(img_b)
+    mask = np.zeros((h, w), dtype=bool)
+
+    src_idx = np.where(valid)[0]
+    src_v = (src_idx // w).astype(int)
+    src_u = (src_idx % w).astype(int)
+    dst_u = u_b[valid]
+    dst_v = v_b[valid]
+
+    warp_img[dst_v, dst_u] = img_a[src_v, src_u]
+    mask[dst_v, dst_u] = True
+
+    overlap_ratio = mask.sum() / (h * w) * 100
+
+    if mask.sum() < 1000:
+        return {'mv_ssim': float('nan'), 'mv_psnr': float('nan'),
+                'mv_overlap': overlap_ratio}
+
+    # 找重叠区域的 bounding box（避免稀疏像素导致 SSIM 不稳定）
+    rows = np.any(mask, axis=1)
+    cols = np.any(mask, axis=0)
+    rmin, rmax = np.where(rows)[0][[0, -1]]
+    cmin, cmax = np.where(cols)[0][[0, -1]]
+
+    # 裁切重叠区域
+    crop_warp = warp_img[rmin:rmax+1, cmin:cmax+1]
+    crop_ref = img_b[rmin:rmax+1, cmin:cmax+1]
+    crop_mask = mask[rmin:rmax+1, cmin:cmax+1]
+
+    # 只在有效像素上计算
+    # SSIM（整个裁切区域）
+    min_dim = min(crop_warp.shape[0], crop_warp.shape[1])
+    win_size = min(7, min_dim if min_dim % 2 == 1 else min_dim - 1)
+    if win_size < 3:
+        return {'mv_ssim': float('nan'), 'mv_psnr': float('nan'),
+                'mv_overlap': overlap_ratio}
+
+    ssim_val = structural_similarity(
+        crop_warp, crop_ref, channel_axis=2, data_range=255,
+        win_size=win_size
+    )
+
+    # PSNR（只在mask像素上）
+    warp_pixels = warp_img[mask].astype(np.float64)
+    ref_pixels = img_b[mask].astype(np.float64)
+    mse = np.mean((warp_pixels - ref_pixels) ** 2)
+    mv_psnr = 10 * np.log10(255.0 ** 2 / (mse + 1e-8)) if mse > 0 else 100.0
+
+    return {
+        'mv_ssim': float(ssim_val),
+        'mv_psnr': float(mv_psnr),
+        'mv_overlap': float(overlap_ratio),
+    }
+
+
 # ============== 综合评测 ==============
 
 def evaluate_multiview_consistency(images: Dict[str, np.ndarray],
@@ -407,6 +511,23 @@ def evaluate_multiview_consistency(images: Dict[str, np.ndarray],
                 pair_metrics[f"reproj_{key}"] = float('nan')
             else:
                 pair_metrics[f"reproj_{key}"] = (val_ab + val_ba) / 2
+
+        # MV-SSIM (双向取平均)
+        mvssim_ab = compute_mv_ssim(
+            images[cam_a], images[cam_b], depths[cam_a],
+            cam_a, cam_b, calib_dir
+        )
+        mvssim_ba = compute_mv_ssim(
+            images[cam_b], images[cam_a], depths[cam_b],
+            cam_b, cam_a, calib_dir
+        )
+        for key in mvssim_ab:
+            val_ab = mvssim_ab[key]
+            val_ba = mvssim_ba[key]
+            if np.isnan(val_ab) or np.isnan(val_ba):
+                pair_metrics[key] = float('nan')
+            else:
+                pair_metrics[key] = (val_ab + val_ba) / 2
 
         # LoFTR 匹配
         loftr_res = loftr_matching_consistency(
@@ -659,7 +780,8 @@ def main():
             reproj = agg.get("reproj_warp_psnr", float('nan'))
             inlier = agg.get("loftr_inlier_ratio", float('nan'))
             matches = agg.get("loftr_num_matches", 0)
-            print(f"  {pair_name}: warp_psnr={reproj:.2f}  "
+            ssim = agg.get("mv_ssim", float('nan'))
+            print(f"  {pair_name}: mv_ssim={ssim:.4f}  warp_psnr={reproj:.2f}  "
                   f"loftr_inlier={inlier:.1f}%  matches={matches:.0f}")
 
     # 保存
