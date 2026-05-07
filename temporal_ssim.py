@@ -95,16 +95,22 @@ def _compute_tssim(frames):
     return ssim_list
 
 
+PASS_THRESHOLD = 0.5
+
+
 def _make_result(clip_num, cam, source, frames, ssim_list):
     mean_s = sum(ssim_list) / len(ssim_list)
     min_s = min(ssim_list)
     std_s = (sum((s - mean_s)**2 for s in ssim_list) / len(ssim_list)) ** 0.5
+    pass_count = sum(1 for s in ssim_list if s >= PASS_THRESHOLD)
+    pass_rate = pass_count / len(ssim_list) * 100
     return {
         "clip": clip_num, "camera": cam, "source": source,
         "num_frames": len(frames), "num_pairs": len(ssim_list),
         "temporal_ssim_mean": round(mean_s, 4),
         "temporal_ssim_min": round(min_s, 4),
         "temporal_ssim_std": round(std_s, 4),
+        "pass_rate": round(pass_rate, 1),
         "per_pair_ssim": [round(s, 4) for s in ssim_list],
     }
 
@@ -177,34 +183,50 @@ def summarize_results(all_results, label):
     if not all_results:
         return {}
     all_means = [r["temporal_ssim_mean"] for r in all_results]
+    all_pass = [r["pass_rate"] for r in all_results]
     overall_mean = sum(all_means) / len(all_means)
     overall_min = min(r["temporal_ssim_min"] for r in all_results)
+    overall_pass = sum(all_pass) / len(all_pass)
 
-    by_camera = defaultdict(list)
-    by_clip = defaultdict(list)
+    by_camera_ssim = defaultdict(list)
+    by_camera_pass = defaultdict(list)
+    by_clip_ssim = defaultdict(list)
+    by_clip_pass = defaultdict(list)
     for r in all_results:
-        by_camera[r["camera"]].append(r["temporal_ssim_mean"])
-        by_clip[r["clip"]].append(r["temporal_ssim_mean"])
+        by_camera_ssim[r["camera"]].append(r["temporal_ssim_mean"])
+        by_camera_pass[r["camera"]].append(r["pass_rate"])
+        by_clip_ssim[r["clip"]].append(r["temporal_ssim_mean"])
+        by_clip_pass[r["clip"]].append(r["pass_rate"])
 
     print(f"\n{'=' * 60}")
-    print(f"[{label}] 汇总")
+    print(f"[{label}] 汇总 (阈值={PASS_THRESHOLD})")
     print(f"{'=' * 60}")
-    print(f"Overall tSSIM: {overall_mean:.4f} (worst pair: {overall_min:.4f})")
-    print(f"\n{'Camera':<8} {'tSSIM':>8}")
-    print("-" * 18)
+    print(f"Overall tSSIM: {overall_mean:.4f}  帧连续性通过率: {overall_pass:.1f}%")
+    print(f"\n{'Camera':<8} {'tSSIM':>8} {'通过率':>8}")
+    print("-" * 28)
     for cam in CAMERAS:
-        if cam in by_camera:
-            print(f"{cam:<8} {sum(by_camera[cam])/len(by_camera[cam]):>8.4f}")
-    print(f"\n{'Clip':<8} {'tSSIM':>8}")
-    print("-" * 18)
-    for clip in sorted(by_clip.keys()):
-        print(f"{clip:<8} {sum(by_clip[clip])/len(by_clip[clip]):>8.4f}")
+        if cam in by_camera_ssim:
+            m = sum(by_camera_ssim[cam]) / len(by_camera_ssim[cam])
+            p = sum(by_camera_pass[cam]) / len(by_camera_pass[cam])
+            print(f"{cam:<8} {m:>8.4f} {p:>7.1f}%")
+    print(f"\n{'Clip':<8} {'tSSIM':>8} {'通过率':>8}")
+    print("-" * 28)
+    for clip in sorted(by_clip_ssim.keys()):
+        m = sum(by_clip_ssim[clip]) / len(by_clip_ssim[clip])
+        p = sum(by_clip_pass[clip]) / len(by_clip_pass[clip])
+        print(f"{clip:<8} {m:>8.4f} {p:>7.1f}%")
 
     return {
         "overall_mean": round(overall_mean, 4),
         "overall_worst_pair": round(overall_min, 4),
-        "by_camera": {c: round(sum(v)/len(v), 4) for c, v in by_camera.items()},
-        "by_clip": {c: round(sum(v)/len(v), 4) for c, v in by_clip.items()},
+        "overall_pass_rate": round(overall_pass, 1),
+        "pass_threshold": PASS_THRESHOLD,
+        "by_camera": {c: {"tssim": round(sum(v)/len(v), 4),
+                          "pass_rate": round(sum(by_camera_pass[c])/len(by_camera_pass[c]), 1)}
+                      for c, v in by_camera_ssim.items()},
+        "by_clip": {c: {"tssim": round(sum(v)/len(v), 4),
+                         "pass_rate": round(sum(by_clip_pass[c])/len(by_clip_pass[c]), 1)}
+                    for c, v in by_clip_ssim.items()},
     }
 
 
@@ -237,7 +259,7 @@ def main():
         for r in pool.imap_unordered(process_ours, ours_tasks):
             if r:
                 ours_results.append(r)
-                print(f"  [{r['clip']}/{r['camera']}] tSSIM={r['temporal_ssim_mean']:.4f}")
+                print(f"  [{r['clip']}/{r['camera']}] tSSIM={r['temporal_ssim_mean']:.4f} 通过率={r['pass_rate']:.0f}%")
 
     # GT（多进程）
     gt_results = []
@@ -248,7 +270,7 @@ def main():
             for r in pool.imap_unordered(process_gt, gt_tasks):
                 if r:
                     gt_results.append(r)
-                    print(f"  [{r['clip']}/{r['camera']}] tSSIM={r['temporal_ssim_mean']:.4f}")
+                    print(f"  [{r['clip']}/{r['camera']}] tSSIM={r['temporal_ssim_mean']:.4f} 通过率={r['pass_rate']:.0f}%")
 
     # 汇总
     ours_summary = summarize_results(ours_results, "Ours")
@@ -256,12 +278,11 @@ def main():
 
     if ours_summary and gt_summary:
         print(f"\n{'=' * 60}")
-        print("对比")
+        print(f"对比 (阈值={PASS_THRESHOLD})")
         print(f"{'=' * 60}")
-        print(f"  Ours tSSIM: {ours_summary['overall_mean']:.4f}")
-        print(f"  GT   tSSIM: {gt_summary['overall_mean']:.4f}")
-        diff = ours_summary['overall_mean'] - gt_summary['overall_mean']
-        print(f"  差值:        {diff:+.4f} ({'Ours 更平滑' if diff > 0 else 'GT 更平滑'})")
+        print(f"         {'tSSIM':>8}  {'通过率':>8}")
+        print(f"  Ours   {ours_summary['overall_mean']:>8.4f}  {ours_summary['overall_pass_rate']:>7.1f}%")
+        print(f"  GT     {gt_summary['overall_mean']:>8.4f}  {gt_summary['overall_pass_rate']:>7.1f}%")
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     with open(args.output, "w") as f:
