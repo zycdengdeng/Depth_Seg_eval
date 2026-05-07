@@ -402,18 +402,23 @@ def compute_mv_ssim(img_a: np.ndarray, img_b: np.ndarray,
         return {'mv_ssim': float('nan'), 'mv_psnr': float('nan'),
                 'mv_overlap': 0.0}
 
-    # 构建 warp 图和 mask
-    warp_img = np.zeros_like(img_b)
-    mask = np.zeros((h, w), dtype=bool)
+    # 用 cv2.remap 做双线性插值 warp（避免稀疏离散点）
+    map_x = uv_b[0, :].reshape(h, w).astype(np.float32)
+    map_y = uv_b[1, :].reshape(h, w).astype(np.float32)
+    valid_map = valid.reshape(h, w)
 
-    src_idx = np.where(valid)[0]
-    src_v = (src_idx // w).astype(int)
-    src_u = (src_idx % w).astype(int)
-    dst_u = u_b[valid]
-    dst_v = v_b[valid]
+    # 将无效位置设为 -1，remap 会填充 borderValue
+    map_x[~valid_map] = -1
+    map_y[~valid_map] = -1
 
-    warp_img[dst_v, dst_u] = img_a[src_v, src_u]
-    mask[dst_v, dst_u] = True
+    warp_img = cv2.remap(img_b, map_x, map_y, cv2.INTER_LINEAR,
+                         borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+
+    # mask: warp 有效的区域
+    mask_remap = cv2.remap(np.ones((h, w), dtype=np.float32),
+                           map_x, map_y, cv2.INTER_NEAREST,
+                           borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    mask = (mask_remap > 0.5) & valid_map
 
     overlap_ratio = mask.sum() / (h * w) * 100
 
@@ -421,34 +426,35 @@ def compute_mv_ssim(img_a: np.ndarray, img_b: np.ndarray,
         return {'mv_ssim': float('nan'), 'mv_psnr': float('nan'),
                 'mv_overlap': overlap_ratio}
 
-    # 找重叠区域的 bounding box（避免稀疏像素导致 SSIM 不稳定）
+    # 找重叠区域的 bounding box
     rows = np.any(mask, axis=1)
     cols = np.any(mask, axis=0)
     rmin, rmax = np.where(rows)[0][[0, -1]]
     cmin, cmax = np.where(cols)[0][[0, -1]]
 
-    # 裁切重叠区域
+    crop_a = img_a[rmin:rmax+1, cmin:cmax+1]
     crop_warp = warp_img[rmin:rmax+1, cmin:cmax+1]
-    crop_ref = img_b[rmin:rmax+1, cmin:cmax+1]
     crop_mask = mask[rmin:rmax+1, cmin:cmax+1]
 
-    # 只在有效像素上计算
-    # SSIM（整个裁切区域）
-    min_dim = min(crop_warp.shape[0], crop_warp.shape[1])
+    # SSIM: 计算逐像素 SSIM map，只取 mask 内像素的均值
+    min_dim = min(crop_a.shape[0], crop_a.shape[1])
     win_size = min(7, min_dim if min_dim % 2 == 1 else min_dim - 1)
     if win_size < 3:
         return {'mv_ssim': float('nan'), 'mv_psnr': float('nan'),
                 'mv_overlap': overlap_ratio}
 
-    ssim_val = structural_similarity(
-        crop_warp, crop_ref, channel_axis=2, data_range=255,
-        win_size=win_size
+    _, ssim_map = structural_similarity(
+        crop_a, crop_warp, channel_axis=2, data_range=255,
+        win_size=win_size, full=True
     )
+    # ssim_map: (H, W, 3) → 取通道均值 → 只在 mask 内取均值
+    ssim_per_pixel = ssim_map.mean(axis=2)
+    ssim_val = ssim_per_pixel[crop_mask].mean()
 
-    # PSNR（只在mask像素上）
+    # PSNR: 只在 mask 像素上
+    a_pixels = img_a[mask].astype(np.float64)
     warp_pixels = warp_img[mask].astype(np.float64)
-    ref_pixels = img_b[mask].astype(np.float64)
-    mse = np.mean((warp_pixels - ref_pixels) ** 2)
+    mse = np.mean((a_pixels - warp_pixels) ** 2)
     mv_psnr = 10 * np.log10(255.0 ** 2 / (mse + 1e-8)) if mse > 0 else 100.0
 
     return {
