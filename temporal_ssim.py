@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-帧间连续性评测 — Temporal SSIM
+帧间连续性评测 — Temporal SSIM（多进程并行）
 
 对 TF/Ours 的 MP4 视频和对应 GT 帧序列计算相邻帧之间的 SSIM。
 
 使用：
     python temporal_ssim.py
     python temporal_ssim.py --clips 031 076 --cameras FL FW
-    python temporal_ssim.py --skip-gt   # 只跑 Ours，跳过 GT
+    python temporal_ssim.py --skip-gt
+    python temporal_ssim.py --workers 64
 """
 
 import os
@@ -21,6 +22,7 @@ import numpy as np
 from datetime import datetime
 from skimage.metrics import structural_similarity
 from collections import defaultdict
+from multiprocessing import Pool
 from typing import List, Optional, Tuple
 
 GEN_ROOT = "/mnt/zihanw/tf2.5_verion2_test_evaluation"
@@ -50,66 +52,101 @@ CAMERA_SHORT_TO_LONG = {
 CAMERAS = list(CAMERA_SHORT_TO_LONG.keys())
 
 
-# ============== GT 帧序列 ==============
+# ============== 帧加载（顶层函数，可被 pickle） ==============
 
-_clip_full_name_cache = {}
-_gt_file_cache = {}
-
-
-def find_clip_full_name(clip_num: str) -> Optional[str]:
-    if clip_num in _clip_full_name_cache:
-        return _clip_full_name_cache[clip_num]
-    matches = glob.glob(os.path.join(GT_ROOT, f"{clip_num}_*"))
-    if matches:
-        full_name = os.path.basename(matches[0])
-        _clip_full_name_cache[clip_num] = full_name
-        return full_name
-    return None
+def _parse_vehicle_timestamp(filename):
+    match = re.search(r'_(\d+\.\d+)\.jpg$', filename)
+    return float(match.group(1)) if match else None
 
 
-def _build_gt_cache(clip_full: str, camera: str) -> List[Tuple[float, str]]:
-    key = (clip_full, camera)
-    if key in _gt_file_cache:
-        return _gt_file_cache[key]
+def _load_gt_entries(clip_full, camera):
     gt_dir = os.path.join(GT_ROOT, clip_full, "car", "images", camera)
     entries = []
     if os.path.isdir(gt_dir):
         for fname in os.listdir(gt_dir):
             if not fname.endswith('.jpg'):
                 continue
-            match = re.search(r'_(\d+\.\d+)\.jpg$', fname)
-            if match:
-                ts = float(match.group(1))
+            ts = _parse_vehicle_timestamp(fname)
+            if ts is not None:
                 entries.append((ts, os.path.join(gt_dir, fname)))
         entries.sort(key=lambda x: x[0])
-    _gt_file_cache[key] = entries
     return entries
 
 
-def compute_frame_timestamps(clip_num: str, num_frames: int) -> List[int]:
+def _find_clip_full_name(clip_num):
+    matches = glob.glob(os.path.join(GT_ROOT, f"{clip_num}_*"))
+    return os.path.basename(matches[0]) if matches else None
+
+
+def _compute_frame_timestamps(clip_num, num_frames):
     info = CLIP_TS_RANGES[clip_num]
-    ts_start, ts_end = info["start"], info["end"]
+    s, e = info["start"], info["end"]
     if num_frames == 1:
-        return [ts_start]
-    return [int(round(ts_start + i * (ts_end - ts_start) / (num_frames - 1)))
-            for i in range(num_frames)]
+        return [s]
+    return [int(round(s + i * (e - s) / (num_frames - 1))) for i in range(num_frames)]
 
 
-def collect_gt_frame_sequence(clip_num: str, camera: str,
-                              num_frames: int = 29) -> List[np.ndarray]:
-    """收集与视频帧对应的 GT 帧序列（去畸变 + resize 到 1280x720）"""
+def _compute_tssim(frames):
+    ssim_list = []
+    for i in range(len(frames) - 1):
+        s = structural_similarity(frames[i], frames[i + 1],
+                                  channel_axis=2, data_range=255)
+        ssim_list.append(s)
+    return ssim_list
+
+
+def _make_result(clip_num, cam, source, frames, ssim_list):
+    mean_s = sum(ssim_list) / len(ssim_list)
+    min_s = min(ssim_list)
+    std_s = (sum((s - mean_s)**2 for s in ssim_list) / len(ssim_list)) ** 0.5
+    return {
+        "clip": clip_num, "camera": cam, "source": source,
+        "num_frames": len(frames), "num_pairs": len(ssim_list),
+        "temporal_ssim_mean": round(mean_s, 4),
+        "temporal_ssim_min": round(min_s, 4),
+        "temporal_ssim_std": round(std_s, 4),
+        "per_pair_ssim": [round(s, 4) for s in ssim_list],
+    }
+
+
+def process_ours(args):
+    """处理一个 Ours clip/camera（顶层函数）"""
+    clip_num, cam, gen_root = args
+    seg = CLIP_TS_RANGES[clip_num]["seg"]
+    video_path = os.path.join(gen_root, f"{clip_num}_{seg}",
+                              f"{CAMERA_SHORT_TO_LONG[cam]}_generated.mp4")
+    if not os.path.exists(video_path):
+        return None
+    cap = cv2.VideoCapture(video_path)
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    cap.release()
+    if len(frames) < 2:
+        return None
+    ssim_list = _compute_tssim(frames)
+    return _make_result(clip_num, cam, "Ours", frames, ssim_list)
+
+
+def process_gt(args):
+    """处理一个 GT clip/camera（顶层函数）"""
     from undistort import load_gt_undistorted
 
-    clip_full = find_clip_full_name(clip_num)
+    clip_num, cam = args
+    clip_full = _find_clip_full_name(clip_num)
     if clip_full is None:
-        return []
+        return None
 
-    timestamps = compute_frame_timestamps(clip_num, num_frames)
-    entries = _build_gt_cache(clip_full, camera)
+    entries = _load_gt_entries(clip_full, cam)
     if not entries:
-        return []
+        return None
 
+    timestamps = _compute_frame_timestamps(clip_num, 29)
     ts_list = [e[0] for e in entries]
+
     frames = []
     for road_ts_ms in timestamps:
         target = road_ts_ms / 1000.0
@@ -122,41 +159,23 @@ def collect_gt_frame_sequence(clip_num: str, camera: str,
                     best_diff = diff
                     best_idx = c
         if best_idx is not None and best_diff * 1000 <= 100.0:
-            gt_rgb = load_gt_undistorted(entries[best_idx][1], camera,
+            gt_rgb = load_gt_undistorted(entries[best_idx][1], cam,
                                          target_size=(1280, 720))
             frames.append(gt_rgb)
         else:
-            return []  # 有帧缺失则放弃整个序列
-    return frames
+            return None
+
+    if len(frames) < 2:
+        return None
+    ssim_list = _compute_tssim(frames)
+    return _make_result(clip_num, cam, "GT", frames, ssim_list)
 
 
-# ============== 通用计算 ==============
-
-def extract_frames(video_path: str):
-    cap = cv2.VideoCapture(video_path)
-    frames = []
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    cap.release()
-    return frames
-
-
-def compute_temporal_ssim(frames):
-    ssim_list = []
-    for i in range(len(frames) - 1):
-        s = structural_similarity(frames[i], frames[i + 1],
-                                  channel_axis=2, data_range=255)
-        ssim_list.append(s)
-    return ssim_list
-
+# ============== 汇总与主函数 ==============
 
 def summarize_results(all_results, label):
     if not all_results:
         return {}
-
     all_means = [r["temporal_ssim_mean"] for r in all_results]
     overall_mean = sum(all_means) / len(all_means)
     overall_min = min(r["temporal_ssim_min"] for r in all_results)
@@ -171,59 +190,22 @@ def summarize_results(all_results, label):
     print(f"[{label}] 汇总")
     print(f"{'=' * 60}")
     print(f"Overall tSSIM: {overall_mean:.4f} (worst pair: {overall_min:.4f})")
-
     print(f"\n{'Camera':<8} {'tSSIM':>8}")
     print("-" * 18)
     for cam in CAMERAS:
         if cam in by_camera:
-            m = sum(by_camera[cam]) / len(by_camera[cam])
-            print(f"{cam:<8} {m:>8.4f}")
-
+            print(f"{cam:<8} {sum(by_camera[cam])/len(by_camera[cam]):>8.4f}")
     print(f"\n{'Clip':<8} {'tSSIM':>8}")
     print("-" * 18)
     for clip in sorted(by_clip.keys()):
-        m = sum(by_clip[clip]) / len(by_clip[clip])
-        print(f"{clip:<8} {m:>8.4f}")
+        print(f"{clip:<8} {sum(by_clip[clip])/len(by_clip[clip]):>8.4f}")
 
     return {
         "overall_mean": round(overall_mean, 4),
         "overall_worst_pair": round(overall_min, 4),
-        "by_camera": {cam: round(sum(v)/len(v), 4)
-                      for cam, v in by_camera.items()},
-        "by_clip": {clip: round(sum(v)/len(v), 4)
-                    for clip, v in by_clip.items()},
+        "by_camera": {c: round(sum(v)/len(v), 4) for c, v in by_camera.items()},
+        "by_clip": {c: round(sum(v)/len(v), 4) for c, v in by_clip.items()},
     }
-
-
-def run_source(source_label, clips, cameras, frame_loader):
-    """对一个数据源跑 tSSIM"""
-    all_results = []
-    print(f"\n[{source_label}]")
-    for clip_num in clips:
-        for cam in cameras:
-            frames = frame_loader(clip_num, cam)
-            if not frames or len(frames) < 2:
-                continue
-            ssim_list = compute_temporal_ssim(frames)
-            mean_ssim = sum(ssim_list) / len(ssim_list)
-            min_ssim = min(ssim_list)
-            std_ssim = (sum((s - mean_ssim)**2 for s in ssim_list) / len(ssim_list)) ** 0.5
-
-            result = {
-                "clip": clip_num,
-                "camera": cam,
-                "source": source_label,
-                "num_frames": len(frames),
-                "num_pairs": len(ssim_list),
-                "temporal_ssim_mean": round(mean_ssim, 4),
-                "temporal_ssim_min": round(min_ssim, 4),
-                "temporal_ssim_std": round(std_ssim, 4),
-                "per_pair_ssim": [round(s, 4) for s in ssim_list],
-            }
-            all_results.append(result)
-            print(f"  [{clip_num}/{cam}] {len(frames)} frames  "
-                  f"tSSIM={mean_ssim:.4f} (min={min_ssim:.4f})")
-    return all_results
 
 
 def main():
@@ -232,36 +214,41 @@ def main():
     parser.add_argument("--cameras", nargs="+", default=None)
     parser.add_argument("--gen-root", type=str, default=None)
     parser.add_argument("--skip-gt", action="store_true", help="跳过 GT")
+    parser.add_argument("--workers", type=int, default=32, help="并行进程数")
     parser.add_argument("--output", type=str, default="./results/temporal_ssim.json")
     args = parser.parse_args()
 
     gen_root = args.gen_root or GEN_ROOT
     clips = args.clips or list(CLIP_TS_RANGES.keys())
     cameras = args.cameras or CAMERAS
+    W = args.workers
 
     print("=" * 60)
-    print("Temporal SSIM — 帧间连续性评测")
+    print(f"Temporal SSIM — 帧间连续性评测 ({W} workers)")
     print(f"Clips: {clips}")
     print(f"Cameras: {cameras}")
     print("=" * 60)
 
-    # Ours
-    def load_ours(clip_num, cam):
-        seg = CLIP_TS_RANGES[clip_num]["seg"]
-        video_path = os.path.join(gen_root, f"{clip_num}_{seg}",
-                                  f"{CAMERA_SHORT_TO_LONG[cam]}_generated.mp4")
-        if not os.path.exists(video_path):
-            return []
-        return extract_frames(video_path)
+    # Ours（多进程）
+    ours_tasks = [(clip, cam, gen_root) for clip in clips for cam in cameras]
+    print(f"\n[Ours] {len(ours_tasks)} 个任务")
+    ours_results = []
+    with Pool(W) as pool:
+        for r in pool.imap_unordered(process_ours, ours_tasks):
+            if r:
+                ours_results.append(r)
+                print(f"  [{r['clip']}/{r['camera']}] tSSIM={r['temporal_ssim_mean']:.4f}")
 
-    ours_results = run_source("Ours", clips, cameras, load_ours)
-
-    # GT
+    # GT（多进程）
     gt_results = []
     if not args.skip_gt:
-        def load_gt(clip_num, cam):
-            return collect_gt_frame_sequence(clip_num, cam, num_frames=29)
-        gt_results = run_source("GT", clips, cameras, load_gt)
+        gt_tasks = [(clip, cam) for clip in clips for cam in cameras]
+        print(f"\n[GT] {len(gt_tasks)} 个任务")
+        with Pool(W) as pool:
+            for r in pool.imap_unordered(process_gt, gt_tasks):
+                if r:
+                    gt_results.append(r)
+                    print(f"  [{r['clip']}/{r['camera']}] tSSIM={r['temporal_ssim_mean']:.4f}")
 
     # 汇总
     ours_summary = summarize_results(ours_results, "Ours")
@@ -276,17 +263,15 @@ def main():
         diff = ours_summary['overall_mean'] - gt_summary['overall_mean']
         print(f"  差值:        {diff:+.4f} ({'Ours 更平滑' if diff > 0 else 'GT 更平滑'})")
 
-    # 保存
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
-    output = {
-        "timestamp": datetime.now().isoformat(),
-        "ours_summary": ours_summary,
-        "gt_summary": gt_summary,
-        "ours_raw": ours_results,
-        "gt_raw": gt_results,
-    }
     with open(args.output, "w") as f:
-        json.dump(output, f, indent=2)
+        json.dump({
+            "timestamp": datetime.now().isoformat(),
+            "ours_summary": ours_summary,
+            "gt_summary": gt_summary,
+            "ours_raw": ours_results,
+            "gt_raw": gt_results,
+        }, f, indent=2)
     print(f"\n结果已保存: {args.output}")
 
 
