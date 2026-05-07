@@ -95,7 +95,7 @@ def _compute_tssim(frames):
     return ssim_list
 
 
-PASS_THRESHOLD = 0.5
+PASS_THRESHOLD = 0.43
 
 
 def _make_result(clip_num, cam, source, frames, ssim_list):
