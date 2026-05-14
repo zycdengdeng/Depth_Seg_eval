@@ -45,24 +45,18 @@ def compute_depth_metrics(pred: np.ndarray, gt: np.ndarray,
             'delta_3': float('nan'),
         }
 
-    # 使用百分位数过滤异常值 (去掉最极端的1%)
-    ratio = pred_valid / gt_valid
-    p1, p99 = np.percentile(ratio, [1, 99])
-    inlier_mask = (ratio >= p1) & (ratio <= p99)
-    pred_filtered = pred_valid[inlier_mask]
-    gt_filtered = gt_valid[inlier_mask]
+    # 所有指标使用相同的有效像素集合（标准做法，不做百分位数过滤）
+    # 绝对相对误差 (Absolute Relative Error)
+    abs_rel = np.mean(np.abs(pred_valid - gt_valid) / gt_valid)
 
-    # 绝对相对误差 (Absolute Relative Error) - 使用过滤后的数据
-    abs_rel = np.mean(np.abs(pred_filtered - gt_filtered) / gt_filtered)
+    # 平方相对误差 (Squared Relative Error)
+    sq_rel = np.mean(((pred_valid - gt_valid) ** 2) / gt_valid)
 
-    # 平方相对误差 (Squared Relative Error) - 使用过滤后的数据
-    sq_rel = np.mean(((pred_filtered - gt_filtered) ** 2) / gt_filtered)
+    # 均方根误差 (RMSE)
+    rmse = np.sqrt(np.mean((pred_valid - gt_valid) ** 2))
 
-    # 均方根误差 (RMSE) - 使用过滤后的数据
-    rmse = np.sqrt(np.mean((pred_filtered - gt_filtered) ** 2))
-
-    # 对数均方根误差 (RMSE log) - 使用过滤后的数据
-    rmse_log = np.sqrt(np.mean((np.log(pred_filtered) - np.log(gt_filtered)) ** 2))
+    # 对数均方根误差 (RMSE log)
+    rmse_log = np.sqrt(np.mean((np.log(pred_valid) - np.log(gt_valid)) ** 2))
 
     # 阈值准确率 (δ < threshold)
     thresh = np.maximum(pred_valid / gt_valid, gt_valid / pred_valid)

@@ -463,7 +463,9 @@ def run_sam_eval(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
         edge_gen = sam.get_edge_map(gen_img)
         edge_gt = sam.get_edge_map(gt_img)
 
-        metrics = compute_edge_consistency(edge_gen, edge_gt, tolerance=3)
+        h, w = edge_gen.shape[:2]
+        tol = max(3, int(round((h**2 + w**2)**0.5 * 0.005)))
+        metrics = compute_edge_consistency(edge_gen, edge_gt, tolerance=tol)
         metrics.update({
             "clip": pair["clip"],
             "distance": pair["distance"],

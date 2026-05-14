@@ -66,7 +66,8 @@ class ImageMetricsEvaluator:
         """
         from skimage.metrics import structural_similarity
         return float(structural_similarity(
-            img1, img2, channel_axis=2, data_range=255
+            img1, img2, win_size=11, gaussian_weights=True, sigma=1.5,
+            channel_axis=2, data_range=255, use_sample_covariance=False
         ))
 
     @torch.no_grad()
