@@ -206,11 +206,24 @@ def remap_to_coarse(seg: np.ndarray, ignore_index: int = 255) -> np.ndarray:
     return lut[safe_seg]
 
 
+# 地面类别 trainId（road=0, sidewalk=1），对应 coarse class flat=0
+FLAT_CLASS_IDS = {0, 1}
+
+
+def _mask_flat_classes(seg: np.ndarray, ignore_index: int = 255) -> np.ndarray:
+    """将地面类（road, sidewalk）设为 ignore，不参与评测"""
+    seg = seg.copy()
+    for cid in FLAT_CLASS_IDS:
+        seg[seg == cid] = ignore_index
+    return seg
+
+
 def compute_segmentation_metrics_multilevel(
     pred: np.ndarray, gt: np.ndarray,
     num_classes: int = 19,
     ignore_index: int = 255,
-    compute_coarse: bool = True
+    compute_coarse: bool = True,
+    exclude_flat: bool = True,
 ) -> Dict[str, float]:
     """
     同时计算细粒度(19类)和超类(7类)的分割指标
@@ -221,10 +234,15 @@ def compute_segmentation_metrics_multilevel(
         num_classes: 细粒度类别数
         ignore_index: 忽略的标签值
         compute_coarse: 是否计算超类指标
+        exclude_flat: 是否排除地面类（road/sidewalk）
 
     Returns:
         包含细粒度和超类指标的字典
     """
+    if exclude_flat:
+        pred = _mask_flat_classes(pred, ignore_index)
+        gt = _mask_flat_classes(gt, ignore_index)
+
     fine_metrics = compute_segmentation_metrics(pred, gt, num_classes, ignore_index)
 
     if not compute_coarse:
@@ -314,7 +332,8 @@ def compute_confusion_matrix(pred: np.ndarray, gt: np.ndarray,
 
 
 def compute_segmentation_consistency(pred_gen: np.ndarray, pred_gt: np.ndarray,
-                                      ignore_index: int = 255) -> Dict[str, float]:
+                                      ignore_index: int = 255,
+                                      exclude_flat: bool = True) -> Dict[str, float]:
     """
     计算分割一致性指标
     比较gen图像和gt图像经过同一分割模型后的分割结果一致性
@@ -323,10 +342,15 @@ def compute_segmentation_consistency(pred_gen: np.ndarray, pred_gt: np.ndarray,
         pred_gen: 对生成图像的分割预测
         pred_gt: 对真值图像的分割预测
         ignore_index: 忽略的标签值
+        exclude_flat: 是否排除地面类（road/sidewalk）
 
     Returns:
         一致性指标
     """
+    if exclude_flat:
+        pred_gen = _mask_flat_classes(pred_gen, ignore_index)
+        pred_gt = _mask_flat_classes(pred_gt, ignore_index)
+
     # 有效区域（两者都不是ignore的区域）
     valid_mask = (pred_gen != ignore_index) & (pred_gt != ignore_index)
 
