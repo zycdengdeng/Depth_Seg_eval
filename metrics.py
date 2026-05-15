@@ -323,7 +323,7 @@ def compute_segmentation_metrics(pred: np.ndarray, gt: np.ndarray,
 def compute_confusion_matrix(pred: np.ndarray, gt: np.ndarray,
                               num_classes: int) -> np.ndarray:
     """计算混淆矩阵"""
-    mask = (gt >= 0) & (gt < num_classes)
+    mask = (gt >= 0) & (gt < num_classes) & (pred >= 0) & (pred < num_classes)
     conf_matrix = np.bincount(
         num_classes * gt[mask].astype(int) + pred[mask].astype(int),
         minlength=num_classes ** 2
