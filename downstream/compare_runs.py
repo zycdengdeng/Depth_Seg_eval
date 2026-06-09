@@ -74,10 +74,11 @@ TASK_FILES = {
 }
 
 
-def resolve_metrics_dir(path: str) -> str:
-    """传入 metrics 目录或 run root 都可以；自动定位含 *_results.json 的目录。"""
+def resolve_metrics_dir(path: str) -> Optional[str]:
+    """传入 metrics 目录或 run root 都可以；自动定位含 *_results.json 的目录。
+    目录不存在则返回 None（不崩溃）。"""
     if not os.path.isdir(path):
-        raise FileNotFoundError(f"目录不存在: {path}")
+        return None
     # 直接含结果文件
     if any(os.path.exists(os.path.join(path, f)) for f in TASK_FILES.values()):
         return path
@@ -90,7 +91,11 @@ def resolve_metrics_dir(path: str) -> str:
 
 def load_run(metrics_dir: str) -> Dict[str, dict]:
     """读取一个 run 的 depth/seg/sam 结果 JSON，返回 {task: full_dict}。缺失则跳过。"""
-    metrics_dir = resolve_metrics_dir(metrics_dir)
+    resolved = resolve_metrics_dir(metrics_dir)
+    if resolved is None:
+        print(f"  [warn] 目录不存在（这次评测可能还没跑）: {metrics_dir}")
+        return {}
+    metrics_dir = resolved
     run = {}
     for task, fname in TASK_FILES.items():
         fpath = os.path.join(metrics_dir, fname)
