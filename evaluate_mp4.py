@@ -424,17 +424,27 @@ def main():
     parser.add_argument("--parallel", action="store_true",
                        help="启用多GPU并行评测")
     parser.add_argument("--gpus", type=str, default=None,
-                       help="指定GPU ID，逗号分隔")
+                       help="手动指定GPU ID，逗号分隔。不指定则自动避开被占用的卡")
+    parser.add_argument("--min-free-mem", type=int, default=20000,
+                       help="自动选卡时单卡所需的最低空闲显存(MB)，默认20000")
+    parser.add_argument("--max-gpus", type=int, default=None,
+                       help="自动选卡时最多使用几张卡（默认不限）")
 
     args = parser.parse_args()
 
     print(f"加载配置文件: {args.config}")
     config = load_mp4_config(args.config)
 
-    # 解析GPU
-    gpu_ids = None
+    # 解析GPU：手动指定优先，否则自动避开被占用的卡
     if args.gpus:
         gpu_ids = [int(x.strip()) for x in args.gpus.split(',')]
+        print(f"使用手动指定的GPU: {gpu_ids}")
+    else:
+        from gpu_utils import select_free_gpus
+        print("\n自动检测空闲GPU（避开合作者占用的卡）...")
+        gpu_ids = select_free_gpus(min_free_mb=args.min_free_mem,
+                                   max_gpus=args.max_gpus)
+    primary_gpu = gpu_ids[0] if gpu_ids else 0
 
     # 确保输出目录存在
     ensure_dir(config['output']['metrics'])
@@ -487,7 +497,7 @@ def main():
 
                 results = {}
                 for camera, pairs in video_pairs.items():
-                    results[camera] = task_fn(config, camera, pairs, 0, save_vis)
+                    results[camera] = task_fn(config, camera, pairs, primary_gpu, save_vis)
 
                 all_metrics = [v for v in results.values() if v]
                 if all_metrics:

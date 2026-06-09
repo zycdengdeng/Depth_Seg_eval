@@ -39,9 +39,16 @@ done
 多 GPU 加速（按 group 分到不同卡，depth/seg/sam 都支持；FVD 不在我们清单里）：
 
 ```bash
-python evaluate.py --config downstream/config_cse_baseline.yaml --task depth --no-vis \
-  --parallel --gpus 0,1,2,3
+# --parallel 但不带 --gpus：开跑前自动查 nvidia-smi，只用空闲的卡，避开合作者占用的
+python evaluate.py --config downstream/config_cse_baseline.yaml --task depth --no-vis --parallel
 ```
+
+**共用服务器自动选卡**：不指定 `--gpus` 时，串行会挑最空的一张卡、并行会用所有空闲卡
+（默认要求单卡 ≥20GB 空闲且已用 ≤50%，占满的自动跳过）。可调：
+- `--min-free-mem 30000` 提高空闲显存门槛
+- `--max-gpus 4` 最多用 4 张
+- `--gpus 0,1,2,3` 仍可手动指定（优先级最高）
+- 先单独看一眼选卡情况：`python gpu_utils.py`
 
 对 4 个 config 各跑一遍，得到 4 套 `results/metrics/{depth,seg,sam}_results.json`。
 

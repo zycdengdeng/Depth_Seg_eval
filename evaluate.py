@@ -293,7 +293,15 @@ def main():
     )
     parser.add_argument(
         "--gpus", type=str, default=None,
-        help="指定使用的GPU ID，逗号分隔（如: 0,1,2,3）。默认使用所有可用GPU"
+        help="手动指定GPU ID，逗号分隔（如: 0,1,2,3）。不指定则自动避开被占用的卡"
+    )
+    parser.add_argument(
+        "--min-free-mem", type=int, default=20000,
+        help="自动选卡时单卡所需的最低空闲显存(MB)，默认20000。低于此的卡视为被占用、跳过"
+    )
+    parser.add_argument(
+        "--max-gpus", type=int, default=None,
+        help="自动选卡时最多使用几张卡（默认不限）"
     )
 
     args = parser.parse_args()
@@ -302,10 +310,23 @@ def main():
     print(f"加载配置文件: {args.config}")
     config = load_config(args.config)
 
-    # 解析GPU列表
-    gpu_ids = None
+    # 解析GPU列表：手动指定优先，否则自动避开被占用的卡
     if args.gpus:
         gpu_ids = [int(x.strip()) for x in args.gpus.split(',')]
+        print(f"使用手动指定的GPU: {gpu_ids}")
+    else:
+        from gpu_utils import select_free_gpus
+        print("\n自动检测空闲GPU（避开合作者占用的卡）...")
+        gpu_ids = select_free_gpus(min_free_mb=args.min_free_mem,
+                                   max_gpus=args.max_gpus)
+
+    # 串行模式：把模型放到最空的那张卡上（避开被占用的cuda:0）
+    if not args.parallel and gpu_ids:
+        primary = gpu_ids[0]
+        for sec in ('depth', 'segmentation', 'sam'):
+            if isinstance(config.get(sec), dict):
+                config[sec]['device'] = f'cuda:{primary}'
+        print(f"串行模式：使用 cuda:{primary}")
 
     # 覆盖输出目录
     if args.output_dir:
