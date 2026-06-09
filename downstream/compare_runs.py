@@ -60,11 +60,11 @@ HEADLINE_METRICS = [
     ("sam",   "edge_correlation","SAM edge_corr",   "up",   "{:.4f}"),
 ]
 
-# 论文主表用的精简指标（section 5）
+# 论文主表用的精简指标（section 5）。箭头会自动按 direction 加，不用写在名字里
 PAPER_METRICS = [
-    ("depth", "abs_rel",  "depth abs_rel ↓", "down", "{:.4f}"),
-    ("seg",   "miou",     "seg mIoU ↑",      "up",   "{:.2f}"),
-    ("sam",   "edge_f1",  "SAM edge_f1 ↑",   "up",   "{:.2f}"),
+    ("depth", "abs_rel",  "depth abs_rel", "down", "{:.4f}"),
+    ("seg",   "miou",     "seg mIoU",      "up",   "{:.2f}"),
+    ("sam",   "edge_f1",  "SAM edge_f1",   "up",   "{:.2f}"),
 ]
 
 TASK_FILES = {
@@ -134,6 +134,21 @@ def is_better(direction: str, base: float, new: float) -> Optional[bool]:
     return new > base
 
 
+def arrow(direction: str) -> str:
+    """↓ = 越低越好；↑ = 越高越好。"""
+    return "↓" if direction == "down" else "↑"
+
+
+def rel_improve(direction: str, base: Optional[float],
+                new: Optional[float]) -> Optional[float]:
+    """gsnet 相对 baseline 的提升百分比（正数=更好，已按方向归一）。"""
+    if base is None or new is None or base == 0:
+        return None
+    if direction == "down":
+        return (base - new) / abs(base) * 100.0
+    return (new - base) / abs(base) * 100.0
+
+
 def fmt(v: Optional[float], pattern: str) -> str:
     return pattern.format(v) if v is not None else "—"
 
@@ -159,8 +174,10 @@ def compare_one(name: str, base_dir: str, gsnet_dir: str,
     title = f"{name}" if group == "overall" else f"{name} — [{group}]"
     lines.append(f"### {title}")
     lines.append("")
-    lines.append("| 指标 | baseline | gsnet | Δ(gsnet−base) | gsnet更优 |")
-    lines.append("|---|---|---|---|---|")
+    lines.append("> 箭头: ↑=越高越好, ↓=越低越好 ｜ 提升%: gsnet 相对 baseline，正数=更好")
+    lines.append("")
+    lines.append("| 指标 | baseline | gsnet | Δ | 提升% | 结果 |")
+    lines.append("|---|---|---|---|---|---|")
 
     wins = 0
     valid = 0
@@ -176,23 +193,39 @@ def compare_one(name: str, base_dir: str, gsnet_dir: str,
                 wins += 1
         delta = (g - b) if (b is not None and g is not None) else None
         delta_str = ("{:+.4f}".format(delta) if delta is not None else "—")
-        mark = "—" if better is None else ("✅" if better else "❌")
+        imp = rel_improve(direction, b, g)
+        imp_str = ("{:+.1f}%".format(imp) if imp is not None else "—")
+        mark = "—" if better is None else ("✅ 更优" if better else "❌ 更差")
+        name_with_arrow = f"{disp} {arrow(direction)}"
         lines.append(
-            f"| {disp} | {fmt(b, pattern)} | {fmt(g, pattern)} | {delta_str} | {mark} |"
+            f"| {name_with_arrow} | {fmt(b, pattern)} | {fmt(g, pattern)} | "
+            f"{delta_str} | {imp_str} | {mark} |"
         )
 
     lines.append("")
     if valid:
-        lines.append(f"> gsnet 在 {wins}/{valid} 个指标上更优。")
+        avg_imp = None
+        # 平均提升%（仅对两边都有值的指标）
+        imps = [rel_improve(d, get_value(run_b, t, k, group), get_value(run_g, t, k, group))
+                for t, k, _disp, d, _p in metrics_spec]
+        imps = [x for x in imps if x is not None]
+        if imps:
+            avg_imp = sum(imps) / len(imps)
+        summary = f"> **gsnet 在 {wins}/{valid} 个指标上更优**"
+        if avg_imp is not None:
+            summary += f"，平均提升 {avg_imp:+.1f}%"
+        summary += "。"
+        lines.append(summary)
         lines.append("")
     return lines, wins, valid
 
 
 def build_paper_table(pairs_data: List[Tuple[str, str, str]]) -> List[str]:
     """汇总所有数据集的论文主表（section 5 风格）。"""
-    cols = [disp for _, _, disp, _, _ in PAPER_METRICS]
+    cols = [f"{disp} {arrow(direction)}" for _, _, disp, direction, _ in PAPER_METRICS]
     lines = []
-    lines.append("## 论文主表（下游感知，越好用粗体）")
+    lines.append("## 论文主表（下游感知，gsnet 更优的数加粗）")
+    lines.append("> 表头箭头: ↑=越高越好, ↓=越低越好")
     lines.append("")
     header = "| 数据集 | init | " + " | ".join(cols) + " |"
     sep = "|---|---|" + "|".join(["---"] * len(cols)) + "|"
