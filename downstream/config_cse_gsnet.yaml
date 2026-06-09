@@ -1,0 +1,57 @@
+# 下游感知评测配置 — CARLA CSE / gsnet (GS-Net-init 渲染)
+# gen = gsnet(GS-Net-init) 渲染, gt = 真值；与 config_cse_baseline.yaml 的 gt 完全相同
+# <camera> 在这里是 CARLA 序列 id（仅影响 per-group 报告），跳过崩坏的 310
+
+data:
+  root: "/mnt/zihanw/downstream_cse/gsnet/_eval_frames"
+  cameras:
+    - "110"
+    - "210"
+    - "410"
+    - "510"
+  gen_folder: "gen"
+  gt_folder: "gt"
+
+output:
+  root: "/mnt/zihanw/downstream_cse/gsnet/results"
+  depth_maps: "/mnt/zihanw/downstream_cse/gsnet/results/depth_maps"
+  seg_maps: "/mnt/zihanw/downstream_cse/gsnet/results/seg_maps"
+  metrics: "/mnt/zihanw/downstream_cse/gsnet/results/metrics"
+
+depth:
+  model: "depth_anything_v2"
+  model_size: "large"
+  device: "cuda"
+
+segmentation:
+  model: "mask2former"
+  backbone: "swin-l"
+  dataset: "cityscapes"
+  device: "cuda"
+  class_merging:
+    enabled: true        # CARLA 合成域，建议重点看 7 类超类 mIoU
+  ego_vehicle_mask:
+    enabled: false
+
+sam:
+  model_size: "large"
+  device: "cuda"
+
+metrics:
+  depth:
+    - "abs_rel"
+    - "rmse"
+    - "delta_1"
+    - "delta_2"
+    - "delta_3"
+  segmentation:
+    - "miou"
+    - "pixel_acc"
+    - "fwiou"
+    - "class_iou"
+
+processing:
+  batch_size: 4
+  num_workers: 4
+  image_size: [1024, 1024]
+  save_visualizations: false   # 下游评测只看数字，关掉可视化省时间/空间

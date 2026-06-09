@@ -1,0 +1,59 @@
+# 下游感知评测配置 — nuScenes SSE / gsnet (GS-Net-init 渲染)
+# gen = GS-Net-init 渲染, gt = 真实留出帧；与 config_nusc_baseline.yaml 的 gt 完全相同
+# <camera> 在这里是 clip 名（仅影响 per-group 报告）
+# nuScenes 是真实图、无域 gap，depth/seg/sam 三个指标都可信
+
+data:
+  root: "/mnt/zihanw/downstream_nusc/gsnet/_eval_frames"
+  cameras:
+    - "348_clip_09"
+    - "332_clip_09"
+    - "331_clip_09"
+    - "299_clip_09"
+    - "325_clip_09"
+  gen_folder: "gen"
+  gt_folder: "gt"
+
+output:
+  root: "/mnt/zihanw/downstream_nusc/gsnet/results"
+  depth_maps: "/mnt/zihanw/downstream_nusc/gsnet/results/depth_maps"
+  seg_maps: "/mnt/zihanw/downstream_nusc/gsnet/results/seg_maps"
+  metrics: "/mnt/zihanw/downstream_nusc/gsnet/results/metrics"
+
+depth:
+  model: "depth_anything_v2"
+  model_size: "large"
+  device: "cuda"
+
+segmentation:
+  model: "mask2former"
+  backbone: "swin-l"
+  dataset: "cityscapes"
+  device: "cuda"
+  class_merging:
+    enabled: true
+  ego_vehicle_mask:
+    enabled: false
+
+sam:
+  model_size: "large"
+  device: "cuda"
+
+metrics:
+  depth:
+    - "abs_rel"
+    - "rmse"
+    - "delta_1"
+    - "delta_2"
+    - "delta_3"
+  segmentation:
+    - "miou"
+    - "pixel_acc"
+    - "fwiou"
+    - "class_iou"
+
+processing:
+  batch_size: 4
+  num_workers: 4
+  image_size: [1024, 1024]
+  save_visualizations: false
