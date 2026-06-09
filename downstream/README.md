@@ -69,7 +69,35 @@ python downstream/compare_runs.py \
 - 传 run root（`.../results`）也行，会自动找其下 `metrics/`。
 - 加 `--per-group` 看每个序列/clip 的逐项对比。
 
-## 说明
+## 4. 定性可视化（gt | baseline | gsnet 三联图）
+
+`compare_runs.py` 出的是**数字**；要肉眼看"三种效果"，用 `visualize_compare.py`，
+对采样帧每个模态各出一张 1x3 拼接图（列 = GT / Baseline / GS-Net）：
+
+```bash
+python downstream/visualize_compare.py \
+  --baseline-root /mnt/zihanw/downstream_cse/baseline/_eval_frames \
+  --gsnet-root    /mnt/zihanw/downstream_cse/gsnet/_eval_frames \
+  --out           /mnt/zihanw/downstream_cse/compare_vis \
+  --tasks rgb depth seg sam \
+  --every 10
+```
+
+输出结构（每种模态独立成图）：
+```
+compare_vis/<group>/
+├── rgb/<frame>.png     # gt | baseline | gsnet 原图
+├── depth/<frame>.png   # 深度图（baseline/gsnet 已对齐 gt 尺度，三者同色阶）
+├── seg/<frame>.png     # 语义分割彩色图（Cityscapes 调色板）
+└── sam/<frame>.png     # SAM 边缘图
+```
+- gt 取自 baseline 那份 `_eval_frames`（两次 run 的 gt 相同）。
+- `--every N` 控制采样密度（默认 10）；`--groups 110 210` 只看部分序列；`--gpu N` 指定卡（默认自动选空闲卡）。
+- 这是给论文用的定性对比图：gsnet 的深度/分割若更贴近 gt 列，就直观印证了指标。
+
+## 指标怎么理解（重要）
+- **gt 是"参照标准/满分锚点"，不是被打分的对象。** 表里是两列数字：baseline-vs-gt、gsnet-vs-gt，
+  比谁离 gt 更近。gt 自己跟自己比恒为满分（abs_rel=0 / mIoU=100%），只是上界。
 - 这里 gen/gt 是**同视角像素对齐**（渲染 vs 真值），所以 depth 主指标 `abs_rel/rmse/delta_1`
   本就是严格逐像素算的（库里的 `align_spatial`/`tolerant_*` 只是额外参考列，不影响主指标）。
 - 期望结果：gsnet 的 depth abs_rel/rmse 更低、seg mIoU/consistency 更高、SAM edge_f1 更高。
