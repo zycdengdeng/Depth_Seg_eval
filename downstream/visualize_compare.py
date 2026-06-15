@@ -57,9 +57,15 @@ def list_groups(baseline_root: str, gsnet_root: str,
     return found
 
 
-def sample_frames(gt_dir: str, every: int, max_per_group: Optional[int]) -> List[str]:
+def sample_frames(gt_dir: str, every: int, max_per_group: Optional[int],
+                  frames: Optional[List[str]] = None) -> List[str]:
     files = sorted(glob.glob(os.path.join(gt_dir, "*.png")))
     files = [os.path.basename(f) for f in files]
+    if frames:
+        # 指定帧：允许带或不带 .png 后缀
+        wanted = {f if f.endswith(".png") else f + ".png" for f in frames}
+        picked = [f for f in files if f in wanted]
+        return picked
     picked = files[::max(1, every)]
     if max_per_group:
         picked = picked[:max_per_group]
@@ -116,6 +122,8 @@ def main():
     parser.add_argument("--groups", nargs="+", default=None,
                         help="只可视化部分 group（默认全部）")
     parser.add_argument("--every", type=int, default=10, help="每隔 N 帧出一张")
+    parser.add_argument("--frames", nargs="+", default=None,
+                        help="只可视化指定帧（如 00012 00034，可带或不带.png）；指定后忽略 --every")
     parser.add_argument("--max-per-group", type=int, default=None,
                         help="每个 group 最多出多少帧")
     parser.add_argument("--config", type=str, default=None,
@@ -167,7 +175,7 @@ def main():
             print(f"[skip] {grp}: 缺 gt/gen 目录")
             continue
 
-        frames = sample_frames(gt_dir, args.every, args.max_per_group)
+        frames = sample_frames(gt_dir, args.every, args.max_per_group, args.frames)
         print(f"\n[{grp}] {len(frames)} 帧")
 
         for fname in frames:
