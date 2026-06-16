@@ -126,6 +126,11 @@ def main():
                         help="只可视化指定帧（如 00012 00034，可带或不带.png）；指定后忽略 --every")
     parser.add_argument("--max-per-group", type=int, default=None,
                         help="每个 group 最多出多少帧")
+    parser.add_argument("--pairs", nargs="+", default=None,
+                        help="精确指定 场景:帧 对（如 510:00044 410:00002）；"
+                             "用于把分散在不同场景的最佳帧一次出图。指定后忽略 --groups/--frames")
+    parser.add_argument("--flat", action="store_true",
+                        help="所有图平铺到同一个输出文件夹，命名 <group>_<frame>_<modality>.png")
     parser.add_argument("--config", type=str, default=None,
                         help="评测 config，用于读模型设置（可选）")
     parser.add_argument("--gpu", type=int, default=None,
@@ -163,11 +168,36 @@ def main():
         from sam_eval import SAMSegmentorFast
         sam_model = SAMSegmentorFast(model_size=sam_size, device=device)
 
-    groups = list_groups(args.baseline_root, args.gsnet_root, args.groups)
-    print(f"将可视化 {len(groups)} 个 group: {groups}")
+    # 构造 {group: [frame.png, ...]} 待处理表
+    if args.pairs:
+        work = {}
+        for p in args.pairs:
+            if ":" not in p:
+                print(f"[skip] --pairs 格式应为 场景:帧，收到: {p}")
+                continue
+            grp, fr = p.split(":", 1)
+            fr = fr if fr.endswith(".png") else fr + ".png"
+            work.setdefault(grp, []).append(fr)
+        print(f"精确指定 {sum(len(v) for v in work.values())} 帧，跨 {len(work)} 个场景")
+    else:
+        groups = list_groups(args.baseline_root, args.gsnet_root, args.groups)
+        work = {}
+        for grp in groups:
+            gt_dir = os.path.join(args.baseline_root, grp, "gt")
+            work[grp] = sample_frames(gt_dir, args.every, args.max_per_group, args.frames)
+        print(f"将可视化 {len(groups)} 个 group: {groups}")
+
+    def out_path(grp, stem, modality):
+        """flat=同一文件夹；否则 <out>/<group>/<modality>/"""
+        if args.flat:
+            ensure_dir(args.out)
+            return os.path.join(args.out, f"{grp}_{stem}_{modality}.png")
+        d = os.path.join(args.out, grp, modality)
+        ensure_dir(d)
+        return os.path.join(d, f"{stem}.png")
 
     total = 0
-    for grp in groups:
+    for grp, frames in work.items():
         gt_dir = os.path.join(args.baseline_root, grp, "gt")
         base_dir = os.path.join(args.baseline_root, grp, "gen")
         gs_dir = os.path.join(args.gsnet_root, grp, "gen")
@@ -175,15 +205,13 @@ def main():
             print(f"[skip] {grp}: 缺 gt/gen 目录")
             continue
 
-        frames = sample_frames(gt_dir, args.every, args.max_per_group, args.frames)
         print(f"\n[{grp}] {len(frames)} 帧")
-
         for fname in frames:
             gt_p = os.path.join(gt_dir, fname)
             base_p = os.path.join(base_dir, fname)
             gs_p = os.path.join(gs_dir, fname)
-            if not (os.path.exists(base_p) and os.path.exists(gs_p)):
-                print(f"  [skip] {fname}: baseline/gsnet 缺同名帧")
+            if not (os.path.exists(gt_p) and os.path.exists(base_p) and os.path.exists(gs_p)):
+                print(f"  [skip] {fname}: gt/baseline/gsnet 缺同名帧")
                 continue
 
             gt_rgb = load_image(gt_p)
@@ -192,12 +220,9 @@ def main():
             stem = os.path.splitext(fname)[0]
 
             if "rgb" in args.tasks:
-                d = os.path.join(args.out, grp, "rgb"); ensure_dir(d)
-                save_triptych([gt_rgb, base_rgb, gs_rgb],
-                              os.path.join(d, f"{stem}.png"))
+                save_triptych([gt_rgb, base_rgb, gs_rgb], out_path(grp, stem, "rgb"))
 
             if "depth" in args.tasks:
-                d = os.path.join(args.out, grp, "depth"); ensure_dir(d)
                 dg = depth_model.predict(gt_rgb)
                 db = depth_model.predict(base_rgb)
                 ds = depth_model.predict(gs_rgb)
@@ -205,29 +230,30 @@ def main():
                 db = align_depth_scale(db, dg, method="median")
                 ds = align_depth_scale(ds, dg, method="median")
                 vmin, vmax = np.percentile(dg, [2, 98])
-                save_triptych([dg, db, ds], os.path.join(d, f"{stem}.png"),
+                save_triptych([dg, db, ds], out_path(grp, stem, "depth"),
                               cmap="magma", vrange=(vmin, vmax))
 
             if "seg" in args.tasks:
-                d = os.path.join(args.out, grp, "seg"); ensure_dir(d)
                 sg = colorize_seg(seg_model.predict(gt_rgb), palette)
                 sb = colorize_seg(seg_model.predict(base_rgb), palette)
                 ss = colorize_seg(seg_model.predict(gs_rgb), palette)
-                save_triptych([sg, sb, ss], os.path.join(d, f"{stem}.png"))
+                save_triptych([sg, sb, ss], out_path(grp, stem, "seg"))
 
             if "sam" in args.tasks:
-                d = os.path.join(args.out, grp, "sam"); ensure_dir(d)
                 eg = sam_model.get_edge_map(gt_rgb)
                 eb = sam_model.get_edge_map(base_rgb)
                 es = sam_model.get_edge_map(gs_rgb)
-                save_triptych([eg, eb, es], os.path.join(d, f"{stem}.png"),
+                save_triptych([eg, eb, es], out_path(grp, stem, "sam"),
                               cmap="gray", vrange=(0, 1))
 
             total += 1
-            print(f"  ✓ {stem}")
+            print(f"  ✓ {grp}/{stem}")
 
     print(f"\n完成：共 {total} 帧，输出在 {args.out}")
-    print("目录结构: <out>/<group>/{rgb,depth,seg,sam}/<frame>.png")
+    if args.flat:
+        print("目录结构（平铺）: <out>/<group>_<frame>_<modality>.png")
+    else:
+        print("目录结构: <out>/<group>/{rgb,depth,seg,sam}/<frame>.png")
 
 
 if __name__ == "__main__":
