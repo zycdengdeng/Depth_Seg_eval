@@ -214,9 +214,12 @@ def collect_image_pairs(clips: List[str] = None,
     common_ts = None
     if common:
         from common_frames import get_common_targets, MAX_FRAME_DIFF_MS
+        from common_frames import EVAL_SIZE as common_eval_size
         common_ts = defaultdict(list)
+        common_clip_full = {}
         for t in get_common_targets():
             common_ts[t["clip_num"]].append(t["road_ts"])
+            common_clip_full[t["clip_num"]] = t["clip"]
         clips = [c for c in clips if c in common_ts]
 
     pairs = []
@@ -229,7 +232,8 @@ def collect_image_pairs(clips: List[str] = None,
             print(f"  警告: clip {clip_num} 不在时间戳表中，跳过")
             continue
 
-        clip_full = find_clip_full_name(clip_num)
+        # common 模式直接用 gs_eval 的 clip 全名，保证 GT 目录完全一致
+        clip_full = common_clip_full[clip_num] if common_ts is not None else find_clip_full_name(clip_num)
         if clip_full is None:
             continue
 
@@ -270,6 +274,13 @@ def collect_image_pairs(clips: List[str] = None,
                         continue
                     selected.append((i, (frames[i], road_ts)))
                 frame_items = selected
+                if frame_items:
+                    from common_frames import resize_to_eval_size
+                    h, w = frames[0].shape[:2]
+                    if (w, h) != common_eval_size:
+                        print(f"  {clip_num}/{cam_short}: 视频尺寸 {w}x{h} → resize 到 "
+                              f"{common_eval_size[0]}x{common_eval_size[1]}")
+                    frame_items = [(i, (resize_to_eval_size(f), ts)) for i, (f, ts) in frame_items]
 
             for i, (frame, ts) in frame_items:
                 gt_path = find_gt_path(clip_full, cam_short, ts)

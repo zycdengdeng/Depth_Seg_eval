@@ -107,6 +107,9 @@ METHODS = {
 # GT数据根目录
 GT_ROOT = "/mnt/car_road_data_TianJin"
 
+# --common 模式（与 Ours 公共帧、统一分辨率）
+COMMON_MODE = False
+
 
 # ============== 路径构建 ==============
 
@@ -133,6 +136,13 @@ def get_gen_path(method_name: str, clip: str, distance: str, camera: str) -> str
 
     else:
         raise ValueError(f"Unknown method type: {mtype}")
+
+
+def _image_size(path: str) -> Tuple[int, int]:
+    """读取图像尺寸 (W, H)，不解码像素"""
+    from PIL import Image
+    with Image.open(path) as im:
+        return im.size
 
 
 def _parse_vehicle_timestamp(filename: str) -> Optional[float]:
@@ -290,6 +300,10 @@ def load_image_pair(gen_path: str, gt_path: str,
     """
     from PIL import Image
     gen_img = Image.open(gen_path).convert('RGB')
+    if COMMON_MODE:
+        from common_frames import EVAL_SIZE
+        if gen_img.size != EVAL_SIZE:
+            gen_img = gen_img.resize(EVAL_SIZE, Image.BICUBIC)
     gen_w, gen_h = gen_img.size
 
     if camera is not None:
@@ -662,7 +676,8 @@ def main():
     args = parser.parse_args()
 
     # 允许覆盖GT根目录
-    global GT_ROOT
+    global GT_ROOT, COMMON_MODE
+    COMMON_MODE = args.common
     if args.gt_root is not None:
         GT_ROOT = args.gt_root
 
@@ -693,7 +708,8 @@ def main():
         for method in all_pairs:
             all_pairs[method] = [p for p in all_pairs[method]
                                  if (p["clip"], p["distance"]) in keep]
-            print(f"  {method}: {len(all_pairs[method])} 对")
+            sizes = {_image_size(p["gen_path"]) for p in all_pairs[method]}
+            print(f"  {method}: {len(all_pairs[method])} 对, 原始渲染尺寸 {sorted(sizes)}")
 
     # 确保输出目录存在
     os.makedirs(args.output_dir, exist_ok=True)

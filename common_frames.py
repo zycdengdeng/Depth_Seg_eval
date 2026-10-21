@@ -16,6 +16,19 @@ from typing import Dict, List
 # Ours 帧与 GS 路侧时间戳的最大允许时间差（毫秒）
 MAX_FRAME_DIFF_MS = 50
 
+# 公共评测分辨率 (W, H)：所有方法的 gen 都 resize 到该尺寸，GT 也 resize 到该尺寸，
+# 保证每个方法面对的是同一张 GT（否则 GT 会跟随各方法 gen 的分辨率变化）
+EVAL_SIZE = (1280, 720)
+
+
+def resize_to_eval_size(img):
+    """把 gen 图像 resize 到 EVAL_SIZE（尺寸已一致则原样返回）"""
+    import numpy as np
+    from PIL import Image
+    if (img.shape[1], img.shape[0]) == EVAL_SIZE:
+        return img
+    return np.array(Image.fromarray(img).resize(EVAL_SIZE, Image.BICUBIC))
+
 
 def get_common_targets() -> List[Dict]:
     """
