@@ -195,8 +195,12 @@ def compute_frame_timestamps(clip_num: str, num_frames: int) -> List[int]:
 
 def collect_image_pairs(clips: List[str] = None,
                         cameras: List[str] = None,
+                        common: bool = False,
                         ) -> List[Dict]:
     """收集所有 (gen_frame, gt_path) 图像对
+
+    common=True 时只保留与 GS 方法公共的时刻（见 common_frames.py）：
+    每个公共路侧时间戳取最近的一帧，GT 用该路侧时间戳匹配，与 gs_eval 完全一致。
 
     Returns:
         [{"gen_frame": np.ndarray, "gt_path": str, "clip": str,
@@ -206,6 +210,14 @@ def collect_image_pairs(clips: List[str] = None,
         clips = list(CLIP_TS_RANGES.keys())
     if cameras is None:
         cameras = CAMERAS
+
+    common_ts = None
+    if common:
+        from common_frames import get_common_targets, MAX_FRAME_DIFF_MS
+        common_ts = defaultdict(list)
+        for t in get_common_targets():
+            common_ts[t["clip_num"]].append(t["road_ts"])
+        clips = [c for c in clips if c in common_ts]
 
     pairs = []
     missing_gt = 0
@@ -228,25 +240,38 @@ def collect_image_pairs(clips: List[str] = None,
             cam_long = CAMERA_SHORT_TO_LONG.get(cam_short)
             if cam_long is None:
                 continue
+            n_expected = len(common_ts[clip_num]) if common_ts is not None else FRAMES_PER_VIDEO
 
             video_path = os.path.join(GEN_ROOT, clip_dir,
                                       f"{cam_long}_generated.mp4")
-            total += FRAMES_PER_VIDEO
+            total += n_expected
 
             if not os.path.exists(video_path):
-                missing_video += FRAMES_PER_VIDEO
+                missing_video += n_expected
                 continue
 
             # 提取帧
             frames = extract_frames(video_path)
             if not frames:
-                missing_video += FRAMES_PER_VIDEO
+                missing_video += n_expected
                 continue
 
             # 计算时间戳
             frame_timestamps = compute_frame_timestamps(clip_num, len(frames))
 
-            for i, (frame, ts) in enumerate(zip(frames, frame_timestamps)):
+            frame_items = list(enumerate(zip(frames, frame_timestamps)))
+            if common_ts is not None:
+                # 每个公共时刻取最近的帧，时间戳用路侧时间戳（GT匹配与gs_eval一致）
+                selected = []
+                for road_ts in common_ts[clip_num]:
+                    i = min(range(len(frames)), key=lambda j: abs(frame_timestamps[j] - road_ts))
+                    if abs(frame_timestamps[i] - road_ts) > MAX_FRAME_DIFF_MS:
+                        print(f"  警告: {clip_num}/{cam_short} 没有与 {road_ts} 对齐的帧，跳过")
+                        continue
+                    selected.append((i, (frames[i], road_ts)))
+                frame_items = selected
+
+            for i, (frame, ts) in frame_items:
                 gt_path = find_gt_path(clip_full, cam_short, ts)
                 if gt_path is None:
                     missing_gt += 1
@@ -556,6 +581,8 @@ def main():
     parser.add_argument("--output-dir", type=str,
                         default="./results/tf_eval",
                         help="结果输出目录")
+    parser.add_argument("--common", action="store_true",
+                        help="只评测与 GS 方法公共的帧（见 common_frames.py）")
     parser.add_argument("--gen-root", type=str, default=None,
                         help="生成视频根目录")
     parser.add_argument("--gt-root", type=str, default=None,
@@ -579,7 +606,8 @@ def main():
 
     # 收集图像对（提取帧 + 匹配 GT）
     print("\n收集图像对（提取MP4帧 + 匹配GT）...")
-    pairs = collect_image_pairs(clips=args.clips, cameras=args.cameras)
+    pairs = collect_image_pairs(clips=args.clips, cameras=args.cameras,
+                                common=args.common)
 
     if not pairs:
         print("没有找到有效的图像对！")

@@ -654,6 +654,8 @@ def main():
                         help="结果输出目录")
     parser.add_argument("--gt-root", type=str, default=None,
                         help="GT数据根目录（默认: /mnt/car_road_data_TianJin）")
+    parser.add_argument("--common", action="store_true",
+                        help="只评测与 Ours(tf_eval) 公共的帧（见 common_frames.py）")
     parser.add_argument("--max-time-diff-ms", type=float, default=100.0,
                         help="GT匹配最大时间差（毫秒）")
 
@@ -683,6 +685,15 @@ def main():
         cameras=args.cameras,
         distances=args.distances,
     )
+
+    if args.common:
+        from common_frames import get_common_targets
+        keep = {(t["clip"], t["distance"]) for t in get_common_targets()}
+        print(f"\n--common: 只保留与 Ours 公共的 {len(keep)} 个时刻")
+        for method in all_pairs:
+            all_pairs[method] = [p for p in all_pairs[method]
+                                 if (p["clip"], p["distance"]) in keep]
+            print(f"  {method}: {len(all_pairs[method])} 对")
 
     # 确保输出目录存在
     os.makedirs(args.output_dir, exist_ok=True)
