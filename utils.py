@@ -115,8 +115,10 @@ def normalize_depth(depth: np.ndarray, method: str = "minmax") -> np.ndarray:
 
 def align_depth_scale(pred: np.ndarray, gt: np.ndarray, method: str = "median") -> np.ndarray:
     """
-    对齐预测深度和真值深度的尺度
-    这对于单目深度估计很重要，因为预测的是相对深度
+    对齐预测深度和真值深度的尺度（仅scale）
+
+    注意：Depth Anything V2 / MiDaS 输出的是仿射不变的相对视差，
+    评测请用 metrics.evaluate_depth_pair（视差空间scale+shift对齐后转深度）。
     """
     mask = (gt > 0) & (pred > 0)
     if mask.sum() == 0:
@@ -183,48 +185,32 @@ def align_spatial(pred: np.ndarray, gt: np.ndarray,
 
 def compute_tolerant_metrics(pred: np.ndarray, gt: np.ndarray,
                               window_size: int = 5,
-                              min_depth: float = 1e-3) -> np.ndarray:
+                              mask: Optional[np.ndarray] = None) -> np.ndarray:
     """
-    局部窗口容差：对于每个像素，在窗口内找最小误差的匹配
+    局部窗口容差：对于每个像素，在gt的邻域窗口内找使 |pred-g|/g 最小的值
+
+    该最优值恰为 clip(pred, 邻域最小值, 邻域最大值)。
+    无效gt像素不参与邻域统计（避免天空等无效区域被当成匹配对象）。
 
     Args:
         pred: 预测深度图 (H, W)
         gt: 真值深度图 (H, W)
         window_size: 搜索窗口大小（奇数）
-        min_depth: 最小有效深度
+        mask: gt有效区域（可选，默认 gt > 0）
 
     Returns:
-        best_match_gt: 每个pred像素对应的最优gt匹配值
+        best_match_gt: 每个pred像素对应的最优gt匹配值（无效区域保持原gt）
     """
     from scipy.ndimage import minimum_filter, maximum_filter
 
-    pad = window_size // 2
-    h, w = pred.shape
+    if mask is None:
+        mask = gt > 0
 
-    # 对于每个pred像素，找gt窗口内使得 |pred-gt|/gt 最小的值
-    # 近似：用gt的local min和local max来bound
-    best_match_gt = np.copy(gt)
+    gt_local_min = minimum_filter(np.where(mask, gt, np.inf), size=window_size)
+    gt_local_max = maximum_filter(np.where(mask, gt, -np.inf), size=window_size)
 
-    mask = (gt > min_depth) & (pred > min_depth)
-
-    # 对gt做sliding window，找每个位置的最小误差匹配
-    ratio = np.where(mask, pred / gt, 1.0)
-
-    # 如果pred > gt，最好的匹配是gt窗口里最大的值
-    # 如果pred < gt，最好的匹配是gt窗口里最小的值
-    gt_local_min = minimum_filter(gt, size=window_size)
-    gt_local_max = maximum_filter(gt, size=window_size)
-
-    # 选择使ratio更接近1的匹配
-    best_match_gt = np.where(
-        pred > gt,
-        np.minimum(gt_local_max, pred),  # pred偏大时，取gt邻域最大值
-        np.maximum(gt_local_min, pred),  # pred偏小时，取gt邻域最小值
-    )
-    # 但不能超出gt local范围
-    best_match_gt = np.clip(best_match_gt, gt_local_min, gt_local_max)
-
-    return best_match_gt
+    best_match_gt = np.clip(pred, gt_local_min, gt_local_max)
+    return np.where(mask, best_match_gt, gt)
 
 
 def save_depth_visualization(depth: np.ndarray, path: str, cmap: str = "magma"):

@@ -26,6 +26,8 @@ depth:
   model: "depth_anything_v2"  # 可选: depth_anything_v2, midas, metric3d
   model_size: "large"  # small, base, large (或旧名: vits, vitb, vitl)
   device: "cuda"
+  # 评测有效深度范围（最远/最近）：深度超过 最近处×该值 的像素（天空等）不参与评测
+  max_depth_ratio: 100
 
 # 语义分割模型配置
 segmentation:

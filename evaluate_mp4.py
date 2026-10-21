@@ -33,7 +33,7 @@ from mp4_utils import (
     iter_video_frame_pairs, read_video_frames, get_video_info,
     count_total_frames, ensure_dir
 )
-from metrics import aggregate_metrics, format_metrics_table
+from metrics import aggregate_metrics, aggregate_overall, format_metrics_table
 from evaluate import convert_to_serializable, generate_report
 
 
@@ -45,12 +45,13 @@ def evaluate_depth_mp4(config: Dict, camera: str, video_pairs: List[Tuple],
     torch.cuda.set_device(gpu_id)
 
     from depth_eval import get_depth_estimator
-    from utils import align_depth_scale, save_depth_visualization
-    from metrics import compute_depth_metrics, compute_depth_correlation
+    from utils import save_depth_visualization
+    from metrics import evaluate_depth_pair
 
     worker_config = deepcopy(config)
     worker_config['depth']['device'] = f'cuda:{gpu_id}'
     estimator = get_depth_estimator(worker_config)
+    max_depth_ratio = worker_config['depth'].get('max_depth_ratio', 100.0)
 
     frame_step = config.get('processing', {}).get('frame_step', 1)
     output_dir = os.path.join(config['output']['depth_maps'], camera)
@@ -64,11 +65,9 @@ def evaluate_depth_mp4(config: Dict, camera: str, video_pairs: List[Tuple],
             depth_gen = estimator.predict(gen_frame)
             depth_gt = estimator.predict(gt_frame)
 
-            depth_gen_aligned = align_depth_scale(depth_gen, depth_gt, method="median")
-
-            metrics = compute_depth_metrics(depth_gen_aligned, depth_gt)
-            correlation = compute_depth_correlation(depth_gen_aligned, depth_gt)
-            metrics.update(correlation)
+            metrics = evaluate_depth_pair(depth_gen, depth_gt,
+                                          max_depth_ratio=max_depth_ratio,
+                                          with_tolerant=False)
 
             camera_metrics.append(metrics)
 
@@ -363,16 +362,9 @@ def evaluate_parallel_mp4(config: Dict, task: str,
 
     results = dict(result_dict)
 
-    # 计算总体平均
-    all_metrics = []
-    for camera_results in results.values():
-        if camera_results:
-            filtered = {k: v for k, v in camera_results.items()
-                       if not k.endswith('_std') and not isinstance(v, list)}
-            all_metrics.append(filtered)
-
-    if all_metrics:
-        results['overall'] = aggregate_metrics(all_metrics)
+    # 计算总体平均（分割的混淆矩阵跨相机累加）
+    if any(results.values()):
+        results['overall'] = aggregate_overall(results)
 
     return results
 
@@ -489,9 +481,8 @@ def main():
                 for camera, pairs in video_pairs.items():
                     results[camera] = task_fn(config, camera, pairs, 0, save_vis)
 
-                all_metrics = [v for v in results.values() if v]
-                if all_metrics:
-                    results['overall'] = aggregate_metrics(all_metrics)
+                if any(results.values()):
+                    results['overall'] = aggregate_overall(results)
 
                 return results
 

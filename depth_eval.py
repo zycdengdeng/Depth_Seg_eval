@@ -21,12 +21,10 @@ import json
 
 from utils import (
     load_config, get_image_pairs, load_image, load_image_pair, ensure_dir,
-    normalize_depth, align_depth_scale, align_spatial,
-    compute_tolerant_metrics, save_depth_visualization
+    save_depth_visualization
 )
 from metrics import (
-    compute_depth_metrics, compute_depth_correlation, compute_depth_ssim,
-    aggregate_metrics, format_metrics_table
+    evaluate_depth_pair, aggregate_metrics, aggregate_overall, format_metrics_table
 )
 
 
@@ -220,6 +218,7 @@ def evaluate_depth_consistency(config: Dict,
     print("=" * 60)
 
     estimator = get_depth_estimator(config)
+    max_depth_ratio = config['depth'].get('max_depth_ratio', 100.0)
 
     # 获取图像对
     image_pairs = get_image_pairs(config)
@@ -252,38 +251,8 @@ def evaluate_depth_consistency(config: Dict,
             depth_gen = estimator.predict(gen_img)
             depth_gt = estimator.predict(gt_img)
 
-            # 对齐深度尺度（单目深度是相对深度）
-            depth_gen_aligned = align_depth_scale(depth_gen, depth_gt, method="median")
-
-            # === 标准指标（无容差） ===
-            metrics = compute_depth_metrics(depth_gen_aligned, depth_gt)
-            correlation = compute_depth_correlation(depth_gen_aligned, depth_gt)
-            metrics.update(correlation)
-
-            # === 容差指标（补偿时间偏移） ===
-            # 1. 全局空间对齐：用互相关找最优平移
-            depth_gen_spatial, (dy, dx) = align_spatial(
-                depth_gen_aligned, depth_gt, max_shift=20
-            )
-            aligned_metrics = compute_depth_metrics(depth_gen_spatial, depth_gt)
-            metrics['aligned_abs_rel'] = aligned_metrics['abs_rel']
-            metrics['aligned_delta_1'] = aligned_metrics['delta_1']
-            metrics['aligned_rmse'] = aligned_metrics['rmse']
-            metrics['shift_dx'] = float(dx)
-            metrics['shift_dy'] = float(dy)
-
-            # 2. 局部窗口容差：每个像素在5x5窗口内找最优匹配
-            best_match_gt = compute_tolerant_metrics(
-                depth_gen_aligned, depth_gt, window_size=5
-            )
-            tolerant_metrics = compute_depth_metrics(depth_gen_aligned, best_match_gt)
-            metrics['tolerant_abs_rel'] = tolerant_metrics['abs_rel']
-            metrics['tolerant_delta_1'] = tolerant_metrics['delta_1']
-            metrics['tolerant_rmse'] = tolerant_metrics['rmse']
-
-            # 3. SSIM（天然对小偏移鲁棒）
-            ssim = compute_depth_ssim(depth_gen_aligned, depth_gt)
-            metrics.update(ssim)
+            # Depth Anything输出仿射不变的相对视差：视差空间scale+shift对齐后转深度再算指标
+            metrics = evaluate_depth_pair(depth_gen, depth_gt, max_depth_ratio=max_depth_ratio)
 
             camera_metrics.append(metrics)
 
@@ -304,11 +273,7 @@ def evaluate_depth_consistency(config: Dict,
         print(format_metrics_table(results[camera]))
 
     # 计算总体平均
-    all_metrics = []
-    for camera_results in results.values():
-        all_metrics.append({k: v for k, v in camera_results.items()
-                          if not k.endswith('_std')})
-    results['overall'] = aggregate_metrics(all_metrics)
+    results['overall'] = aggregate_overall(results)
 
     print("\n" + "=" * 60)
     print("总体深度评测结果:")

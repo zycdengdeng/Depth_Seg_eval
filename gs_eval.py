@@ -328,8 +328,7 @@ def run_image_metrics(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
 def run_depth_eval(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
     """运行深度一致性评测"""
     from depth_eval import get_depth_estimator
-    from metrics import compute_depth_metrics, compute_depth_correlation
-    from utils import align_depth_scale
+    from metrics import evaluate_depth_pair
     from tqdm import tqdm
 
     depth_config = {
@@ -343,12 +342,8 @@ def run_depth_eval(pairs: List[Dict], device: str = "cuda") -> List[Dict]:
         depth_gen = depth_model.predict(gen_img)
         depth_gt = depth_model.predict(gt_img)
 
-        # 对齐尺度
-        depth_gen_aligned = align_depth_scale(depth_gen, depth_gt, method="median")
-
-        metrics = compute_depth_metrics(depth_gen_aligned, depth_gt)
-        corr = compute_depth_correlation(depth_gen_aligned, depth_gt)
-        metrics.update(corr)
+        # 相对视差：视差空间scale+shift对齐后转深度再算指标
+        metrics = evaluate_depth_pair(depth_gen, depth_gt, with_tolerant=False)
         metrics.update({
             "clip": pair["clip"],
             "distance": pair["distance"],
@@ -597,7 +592,7 @@ def print_summary_table(all_results: Dict[str, Dict[str, Dict]],
     if "overall" not in sample:
         return
     metric_keys = [k for k in sample["overall"].keys()
-                   if not k.endswith('_std') and k != 'class_iou' and k != 'coarse_class_iou']
+                   if not k.endswith('_std') and not isinstance(sample["overall"][k], list)]
 
     # 打印表头
     header = f"{'Method':<20}"

@@ -31,7 +31,7 @@ from utils import (
 from metrics import (
     compute_segmentation_metrics, compute_segmentation_metrics_multilevel,
     compute_segmentation_consistency,
-    aggregate_metrics, format_metrics_table,
+    aggregate_metrics, aggregate_overall, format_metrics_table,
     CITYSCAPES_COARSE_CLASSES
 )
 
@@ -388,11 +388,7 @@ def evaluate_segmentation_consistency(config: Dict,
                     print(f"    {cls_name:<15}: {iou:6.2f}%")
 
     # 计算总体平均
-    all_metrics = []
-    for camera_results in results.values():
-        all_metrics.append({k: v for k, v in camera_results.items()
-                          if not k.endswith('_std') and k not in ('class_iou', 'coarse_class_iou')})
-    results['overall'] = aggregate_metrics(all_metrics)
+    results['overall'] = aggregate_overall(results)
 
     print("\n" + "=" * 60)
     print("总体分割评测结果:")

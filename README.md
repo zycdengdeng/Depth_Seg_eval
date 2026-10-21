@@ -93,6 +93,10 @@ python evaluate.py --task all --no-vis
 | pearson | Pearson相关系数 | ↑ 越高越好 |
 | spearman | Spearman相关系数 | ↑ 越高越好 |
 
+Depth Anything V2 输出的是仿射不变的相对视差。误差类指标（abs_rel / rmse / delta 等）的计算流程：
+只在参照图深度位于 [最近处, 最近处×`max_depth_ratio`] 的像素上评测 → 视差空间最小二乘 scale+shift 对齐 →
+转为深度并除以参照中位深度 → 按 Eigen 协议计算，不做截尾。rmse 单位为"场景中位深度"。
+
 ### 分割指标
 
 | 指标 | 说明 | 理想值 |
@@ -101,7 +105,12 @@ python evaluate.py --task all --no-vis
 | miou | 平均交并比 | ↑ 越高越好 |
 | pixel_acc | 像素准确率 | ↑ 越高越好 |
 | fwiou | 频率加权IoU | ↑ 越高越好 |
-| class_iou | 每类IoU | ↑ 越高越好 |
+| class_iou | 每类IoU（未出现的类为NaN） | ↑ 越高越好 |
+| coarse_* | 7类超类（Cityscapes category）版本 | ↑ 越高越好 |
+| miou_img | 逐图mIoU的均值（仅参考） | ↑ 越高越好 |
+
+miou / fwiou / pixel_acc / class_iou 均由**整个数据集累加的混淆矩阵**计算（Cityscapes官方算法），
+overall 跨相机累加，因此没有 ± std。
 
 ## 数据目录结构
 

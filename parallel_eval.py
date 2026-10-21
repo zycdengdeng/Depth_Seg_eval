@@ -14,7 +14,7 @@ import json
 import traceback
 
 from utils import load_config, get_image_pairs, ensure_dir
-from metrics import aggregate_metrics, format_metrics_table
+from metrics import aggregate_metrics, aggregate_overall, format_metrics_table
 
 
 def _worker_depth(camera: str, pairs: List[Tuple[str, str]],
@@ -26,16 +26,15 @@ def _worker_depth(camera: str, pairs: List[Tuple[str, str]],
         torch.cuda.set_device(gpu_id)
 
         from depth_eval import get_depth_estimator
-        from utils import (load_image, align_depth_scale, align_spatial,
-                          compute_tolerant_metrics, save_depth_visualization, ensure_dir)
-        from metrics import (compute_depth_metrics, compute_depth_correlation,
-                            compute_depth_ssim)
+        from utils import load_image, save_depth_visualization, ensure_dir
+        from metrics import evaluate_depth_pair
         from tqdm import tqdm
 
         # 创建该GPU上的estimator
         worker_config = deepcopy(config)
         worker_config['depth']['device'] = f'cuda:{gpu_id}'
         estimator = get_depth_estimator(worker_config)
+        max_depth_ratio = worker_config['depth'].get('max_depth_ratio', 100.0)
 
         output_dir = config['output']['depth_maps']
         camera_out_dir = os.path.join(output_dir, camera)
@@ -53,34 +52,7 @@ def _worker_depth(camera: str, pairs: List[Tuple[str, str]],
             depth_gen = estimator.predict(gen_img)
             depth_gt = estimator.predict(gt_img)
 
-            depth_gen_aligned = align_depth_scale(depth_gen, depth_gt, method="median")
-
-            # 标准指标
-            metrics = compute_depth_metrics(depth_gen_aligned, depth_gt)
-            correlation = compute_depth_correlation(depth_gen_aligned, depth_gt)
-            metrics.update(correlation)
-
-            # 容差指标
-            depth_gen_spatial, (dy, dx) = align_spatial(
-                depth_gen_aligned, depth_gt, max_shift=20
-            )
-            aligned_metrics = compute_depth_metrics(depth_gen_spatial, depth_gt)
-            metrics['aligned_abs_rel'] = aligned_metrics['abs_rel']
-            metrics['aligned_delta_1'] = aligned_metrics['delta_1']
-            metrics['aligned_rmse'] = aligned_metrics['rmse']
-            metrics['shift_dx'] = float(dx)
-            metrics['shift_dy'] = float(dy)
-
-            best_match_gt = compute_tolerant_metrics(
-                depth_gen_aligned, depth_gt, window_size=5
-            )
-            tolerant_metrics = compute_depth_metrics(depth_gen_aligned, best_match_gt)
-            metrics['tolerant_abs_rel'] = tolerant_metrics['abs_rel']
-            metrics['tolerant_delta_1'] = tolerant_metrics['delta_1']
-            metrics['tolerant_rmse'] = tolerant_metrics['rmse']
-
-            ssim = compute_depth_ssim(depth_gen_aligned, depth_gt)
-            metrics.update(ssim)
+            metrics = evaluate_depth_pair(depth_gen, depth_gt, max_depth_ratio=max_depth_ratio)
 
             # 转换为Python原生类型
             metrics = {k: float(v) if isinstance(v, (np.floating,)) else v
@@ -570,16 +542,9 @@ def evaluate_parallel(config: Dict, task: str = "depth",
                     results[camera] = dict(results[camera])
                     results[camera]['fid'] = float('nan')
 
-    # 计算总体平均
-    all_metrics = []
-    for camera_results in results.values():
-        if camera_results:
-            filtered = {k: v for k, v in camera_results.items()
-                       if not k.endswith('_std') and not isinstance(v, list)}
-            all_metrics.append(filtered)
-
-    if all_metrics:
-        results['overall'] = aggregate_metrics(all_metrics)
+    # 计算总体平均（分割的混淆矩阵跨相机累加）
+    if any(results.values()):
+        results['overall'] = aggregate_overall(results)
 
     # 打印结果
     task_name = {'depth': '深度', 'seg': '分割', 'segmentation': '分割', 'sam': 'SAM结构',

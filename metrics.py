@@ -2,6 +2,7 @@
 评测指标计算
 """
 
+import warnings
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 
@@ -13,28 +14,31 @@ def compute_depth_metrics(pred: np.ndarray, gt: np.ndarray,
                           min_depth: float = 1e-3,
                           max_depth: float = None) -> Dict[str, float]:
     """
-    计算深度估计指标
+    计算深度估计指标（Eigen et al. 标准协议）
+
+    输入必须是**深度**（不是视差），且pred已与gt对齐尺度。
+    有效区域只由gt决定；pred不参与筛选（否则pred的坏值会被剔除而不计入误差）。
+    不做任何截尾/离群点过滤。
 
     Args:
         pred: 预测深度图
         gt: 真值深度图
-        mask: 有效区域mask（可选）
-        min_depth: 最小有效深度阈值，过滤掉太小的值避免除法爆炸
+        mask: 有效区域mask（可选，默认 gt > min_depth）
+        min_depth: 最小有效深度，pred会被clamp到该值以避免log/除零
         max_depth: 最大有效深度阈值（可选）
 
     Returns:
         包含各项指标的字典
     """
     if mask is None:
-        # 过滤无效值和极端值
-        mask = (gt > min_depth) & (pred > min_depth)
+        mask = np.isfinite(gt) & (gt > min_depth)
         if max_depth is not None:
-            mask = mask & (gt < max_depth) & (pred < max_depth)
+            mask = mask & (gt < max_depth)
 
-    pred_valid = pred[mask]
     gt_valid = gt[mask]
+    pred_valid = np.clip(pred[mask], min_depth, max_depth)
 
-    if len(pred_valid) == 0:
+    if len(gt_valid) == 0:
         return {
             'abs_rel': float('nan'),
             'sq_rel': float('nan'),
@@ -45,15 +49,16 @@ def compute_depth_metrics(pred: np.ndarray, gt: np.ndarray,
             'delta_3': float('nan'),
         }
 
-    # 所有指标使用相同的有效像素集合（标准做法，不做百分位数过滤）
+    diff = pred_valid - gt_valid
+
     # 绝对相对误差 (Absolute Relative Error)
-    abs_rel = np.mean(np.abs(pred_valid - gt_valid) / gt_valid)
+    abs_rel = np.mean(np.abs(diff) / gt_valid)
 
     # 平方相对误差 (Squared Relative Error)
-    sq_rel = np.mean(((pred_valid - gt_valid) ** 2) / gt_valid)
+    sq_rel = np.mean(diff ** 2 / gt_valid)
 
     # 均方根误差 (RMSE)
-    rmse = np.sqrt(np.mean((pred_valid - gt_valid) ** 2))
+    rmse = np.sqrt(np.mean(diff ** 2))
 
     # 对数均方根误差 (RMSE log)
     rmse_log = np.sqrt(np.mean((np.log(pred_valid) - np.log(gt_valid)) ** 2))
@@ -73,6 +78,121 @@ def compute_depth_metrics(pred: np.ndarray, gt: np.ndarray,
         'delta_2': delta_2,
         'delta_3': delta_3,
     }
+
+
+def align_disparity_affine(disp_pred: np.ndarray, disp_gt: np.ndarray,
+                           mask: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    视差空间最小二乘 scale + shift 对齐（相对视差是仿射不变的，只对齐scale不够）
+
+    Args:
+        disp_pred: 预测视差 (H, W)
+        disp_gt: 参照视差 (H, W)
+        mask: 参与拟合的像素（可选，默认全部有限值）
+
+    Returns:
+        对齐后的预测视差 (H, W), float64
+    """
+    if mask is None:
+        mask = np.isfinite(disp_pred) & np.isfinite(disp_gt)
+    x = disp_pred[mask].astype(np.float64)
+    y = disp_gt[mask].astype(np.float64)
+    A = np.stack([x, np.ones_like(x)], axis=1)
+    scale, shift = np.linalg.lstsq(A, y, rcond=None)[0]
+    return scale * disp_pred.astype(np.float64) + shift
+
+
+def prepare_relative_depth_pair(disp_pred: np.ndarray, disp_gt: np.ndarray,
+                                max_depth_ratio: float = 100.0
+                                ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    把相对视差（Depth Anything V2 / MiDaS 的输出，仿射不变）转成可比较的深度对
+
+    步骤（MiDaS / Depth Anything 论文的评测协议）：
+    1. gt有效区域：视差 > 近处视差(99分位) / max_depth_ratio，
+       即只评测深度在 [最近处, 最近处 × max_depth_ratio] 内的像素，排除天空等无穷远区域
+    2. 在视差空间用最小二乘拟合 scale + shift，把pred对齐到gt
+    3. pred视差clamp到有效下限后取倒数得到深度
+    4. 两者再同除以gt深度中位数，使rmse/sq_rel以"场景中位深度"为单位，跨帧可比
+
+    Args:
+        disp_pred: 预测视差 (H, W)
+        disp_gt: 参照视差 (H, W)
+        max_depth_ratio: 有效深度范围（最远/最近）
+
+    Returns:
+        depth_pred: 对齐后的预测深度 (H, W)
+        depth_gt: 参照深度 (H, W)，无效区域为0
+        valid: 有效区域mask (H, W)
+    """
+    valid = np.isfinite(disp_gt) & np.isfinite(disp_pred) & (disp_gt > 0)
+    if valid.sum() < 2:
+        zeros = np.zeros_like(disp_gt, dtype=np.float64)
+        return zeros, zeros, np.zeros_like(valid)
+
+    min_disp = np.percentile(disp_gt[valid], 99) / max_depth_ratio
+    valid &= disp_gt > min_disp
+    if valid.sum() < 2:
+        zeros = np.zeros_like(disp_gt, dtype=np.float64)
+        return zeros, zeros, valid
+
+    disp_pred_aligned = np.maximum(align_disparity_affine(disp_pred, disp_gt, valid), min_disp)
+    depth_pred = 1.0 / disp_pred_aligned
+    depth_gt = np.where(valid, 1.0 / np.maximum(disp_gt, min_disp), 0.0)
+
+    norm = np.median(depth_gt[valid])
+    return depth_pred / norm, depth_gt / norm, valid
+
+
+def evaluate_depth_pair(disp_pred: np.ndarray, disp_gt: np.ndarray,
+                        max_depth_ratio: float = 100.0,
+                        with_tolerant: bool = True) -> Dict[str, float]:
+    """
+    对一对相对视差图计算全部深度指标
+
+    Args:
+        disp_pred: gen图像的视差 (H, W)
+        disp_gt: gt图像的视差 (H, W)
+        max_depth_ratio: 见 prepare_relative_depth_pair
+        with_tolerant: 是否额外计算空间对齐/局部容差指标
+
+    Returns:
+        指标字典
+    """
+    depth_pred, depth_gt, valid = prepare_relative_depth_pair(
+        disp_pred, disp_gt, max_depth_ratio=max_depth_ratio
+    )
+
+    metrics = compute_depth_metrics(depth_pred, depth_gt, mask=valid)
+    # 相关性和SSIM对仿射变换不变，直接在原始视差上算
+    metrics.update(compute_depth_correlation(disp_pred, disp_gt))
+    metrics.update(compute_depth_ssim(disp_pred, disp_gt))
+
+    if not with_tolerant:
+        return metrics
+
+    from utils import align_spatial, compute_tolerant_metrics
+
+    # 1. 全局空间对齐：先用互相关平移视差，再重新做仿射对齐和深度转换
+    disp_pred_shifted, (dy, dx) = align_spatial(disp_pred, disp_gt, max_shift=20)
+    depth_pred_shifted, depth_gt_s, valid_s = prepare_relative_depth_pair(
+        disp_pred_shifted, disp_gt, max_depth_ratio=max_depth_ratio
+    )
+    aligned_metrics = compute_depth_metrics(depth_pred_shifted, depth_gt_s, mask=valid_s)
+    metrics['aligned_abs_rel'] = aligned_metrics['abs_rel']
+    metrics['aligned_delta_1'] = aligned_metrics['delta_1']
+    metrics['aligned_rmse'] = aligned_metrics['rmse']
+    metrics['shift_dx'] = float(dx)
+    metrics['shift_dy'] = float(dy)
+
+    # 2. 局部窗口容差：每个像素在5x5窗口内找最优匹配
+    best_match_gt = compute_tolerant_metrics(depth_pred, depth_gt, window_size=5, mask=valid)
+    tolerant_metrics = compute_depth_metrics(depth_pred, best_match_gt, mask=valid)
+    metrics['tolerant_abs_rel'] = tolerant_metrics['abs_rel']
+    metrics['tolerant_delta_1'] = tolerant_metrics['delta_1']
+    metrics['tolerant_rmse'] = tolerant_metrics['rmse']
+
+    return metrics
 
 
 def compute_depth_correlation(pred: np.ndarray, gt: np.ndarray,
@@ -226,14 +346,17 @@ def compute_segmentation_metrics_multilevel(
     exclude_flat: bool = True,
 ) -> Dict[str, float]:
     """
-    同时计算细粒度(19类)和超类(7类)的分割指标
+    同时计算细粒度(19类)和超类(7类, Cityscapes category)的分割指标
+
+    返回值中带有 conf_matrix / coarse_conf_matrix，
+    aggregate_metrics 会把它们累加，得到数据集级 mIoU（Cityscapes官方算法）。
 
     Args:
         pred: 预测分割图 (H, W)
         gt: 真值分割图 (H, W)
         num_classes: 细粒度类别数
         ignore_index: 忽略的标签值
-        compute_coarse: 是否计算超类指标
+        compute_coarse: 是否计算超类指标（仅Cityscapes 19类时有效）
         exclude_flat: 是否排除地面类（road/sidewalk）
 
     Returns:
@@ -245,7 +368,7 @@ def compute_segmentation_metrics_multilevel(
 
     fine_metrics = compute_segmentation_metrics(pred, gt, num_classes, ignore_index)
 
-    if not compute_coarse:
+    if not compute_coarse or num_classes != len(CITYSCAPES_COARSE_MAP):
         return fine_metrics
 
     pred_coarse = remap_to_coarse(pred, ignore_index=ignore_index)
@@ -265,27 +388,23 @@ def compute_segmentation_metrics_multilevel(
 
 # ============== 语义分割指标 ==============
 
-def compute_segmentation_metrics(pred: np.ndarray, gt: np.ndarray,
-                                  num_classes: int = 19,
-                                  ignore_index: int = 255) -> Dict[str, float]:
+def segmentation_metrics_from_confusion(conf_matrix: np.ndarray) -> Dict[str, float]:
     """
-    计算语义分割指标
+    由混淆矩阵计算分割指标
+
+    在pred和gt中都没出现的类（union为0）IoU记为NaN，不参与mIoU。
 
     Args:
-        pred: 预测分割图 (H, W)
-        gt: 真值分割图 (H, W)
-        num_classes: 类别数
-        ignore_index: 忽略的标签值
+        conf_matrix: (C, C) 混淆矩阵，行=gt，列=pred
 
     Returns:
-        包含各项指标的字典
+        miou / pixel_acc / fwiou / class_iou
     """
-    # 有效mask
-    valid_mask = gt != ignore_index
-    pred_valid = pred[valid_mask]
-    gt_valid = gt[valid_mask]
+    conf_matrix = np.asarray(conf_matrix, dtype=np.float64)
+    num_classes = conf_matrix.shape[0]
+    total = conf_matrix.sum()
 
-    if len(pred_valid) == 0:
+    if total == 0:
         return {
             'miou': float('nan'),
             'pixel_acc': float('nan'),
@@ -293,23 +412,20 @@ def compute_segmentation_metrics(pred: np.ndarray, gt: np.ndarray,
             'class_iou': [float('nan')] * num_classes,
         }
 
-    # 计算混淆矩阵
-    conf_matrix = compute_confusion_matrix(pred_valid, gt_valid, num_classes)
-
     # 像素准确率
-    pixel_acc = np.diag(conf_matrix).sum() / conf_matrix.sum() * 100
-
-    # 每类IoU
     intersection = np.diag(conf_matrix)
-    union = conf_matrix.sum(axis=1) + conf_matrix.sum(axis=0) - intersection
-    iou_per_class = intersection / (union + 1e-10)
+    pixel_acc = intersection.sum() / total * 100
 
-    # 只计算出现过的类别的mIoU
+    # 每类IoU，未出现的类为NaN
+    union = conf_matrix.sum(axis=1) + conf_matrix.sum(axis=0) - intersection
     valid_classes = union > 0
+    iou_per_class = np.full(num_classes, np.nan)
+    iou_per_class[valid_classes] = intersection[valid_classes] / union[valid_classes]
+
     miou = np.mean(iou_per_class[valid_classes]) * 100
 
     # 频率加权IoU
-    freq = conf_matrix.sum(axis=1) / conf_matrix.sum()
+    freq = conf_matrix.sum(axis=1) / total
     fwiou = np.sum(freq[valid_classes] * iou_per_class[valid_classes]) * 100
 
     return {
@@ -320,12 +436,35 @@ def compute_segmentation_metrics(pred: np.ndarray, gt: np.ndarray,
     }
 
 
+def compute_segmentation_metrics(pred: np.ndarray, gt: np.ndarray,
+                                  num_classes: int = 19,
+                                  ignore_index: int = 255) -> Dict[str, float]:
+    """
+    计算单张图的语义分割指标
+
+    Args:
+        pred: 预测分割图 (H, W)
+        gt: 真值分割图 (H, W)
+        num_classes: 类别数
+        ignore_index: 忽略的标签值
+
+    Returns:
+        包含各项指标的字典，以及该图的混淆矩阵 conf_matrix（用于数据集级累加）
+    """
+    valid_mask = gt != ignore_index
+    conf_matrix = compute_confusion_matrix(pred[valid_mask], gt[valid_mask], num_classes)
+
+    metrics = segmentation_metrics_from_confusion(conf_matrix)
+    metrics['conf_matrix'] = conf_matrix
+    return metrics
+
+
 def compute_confusion_matrix(pred: np.ndarray, gt: np.ndarray,
                               num_classes: int) -> np.ndarray:
-    """计算混淆矩阵"""
+    """计算混淆矩阵（行=gt，列=pred）"""
     mask = (gt >= 0) & (gt < num_classes) & (pred >= 0) & (pred < num_classes)
     conf_matrix = np.bincount(
-        num_classes * gt[mask].astype(int) + pred[mask].astype(int),
+        num_classes * gt[mask].astype(np.int64) + pred[mask].astype(np.int64),
         minlength=num_classes ** 2
     ).reshape(num_classes, num_classes)
     return conf_matrix
@@ -381,6 +520,11 @@ def aggregate_metrics(metrics_list: List[Dict[str, float]]) -> Dict[str, float]:
     """
     汇总多个样本的指标
 
+    - 标量：均值 + 标准差（忽略nan）
+    - 列表（如class_iou）：逐元素nanmean
+    - *conf_matrix：累加，并据此重算数据集级 miou / pixel_acc / fwiou / class_iou
+      （Cityscapes官方算法）；逐图mIoU的均值保留为 miou_img 作参考
+
     Args:
         metrics_list: 每个样本的指标字典列表
 
@@ -402,10 +546,15 @@ def aggregate_metrics(metrics_list: List[Dict[str, float]]) -> Dict[str, float]:
         if not raw_values:
             continue
 
-        # 检查是否是列表类型（如class_iou）
-        if isinstance(raw_values[0], (list, np.ndarray)):
-            # 对于class_iou等列表类型，直接计算nanmean
-            aggregated[key] = np.nanmean(raw_values, axis=0).tolist()
+        if key.endswith('conf_matrix'):
+            aggregated[key] = np.sum([np.asarray(v, dtype=np.int64) for v in raw_values],
+                                     axis=0).tolist()
+        elif isinstance(raw_values[0], (list, np.ndarray)):
+            # 对于class_iou等列表类型，逐元素nanmean（全为nan的类保持nan）
+            with np.errstate(all='ignore'), warnings.catch_warnings():
+                warnings.simplefilter('ignore', category=RuntimeWarning)
+                aggregated[key] = np.nanmean(np.asarray(raw_values, dtype=np.float64),
+                                             axis=0).tolist()
         else:
             # 标量类型，过滤nan值
             values = [v for v in raw_values if not np.isnan(v)]
@@ -415,7 +564,52 @@ def aggregate_metrics(metrics_list: List[Dict[str, float]]) -> Dict[str, float]:
             else:
                 aggregated[key] = float('nan')
 
+    _apply_dataset_level_segmentation(aggregated)
     return aggregated
+
+
+def _apply_dataset_level_segmentation(aggregated: Dict) -> None:
+    """用累加后的混淆矩阵覆盖分割指标（原地修改）"""
+    for prefix in ('', 'coarse_'):
+        cm_key = f'{prefix}conf_matrix'
+        if cm_key not in aggregated:
+            continue
+
+        # 逐图mIoU均值保留作参考
+        if f'{prefix}miou' in aggregated:
+            aggregated[f'{prefix}miou_img'] = aggregated[f'{prefix}miou']
+            if f'{prefix}miou_std' in aggregated:
+                aggregated[f'{prefix}miou_img_std'] = aggregated[f'{prefix}miou_std']
+
+        for name in ('miou', 'pixel_acc', 'fwiou'):
+            aggregated.pop(f'{prefix}{name}_std', None)
+
+        for name, value in segmentation_metrics_from_confusion(aggregated[cm_key]).items():
+            aggregated[f'{prefix}{name}'] = value
+
+
+def aggregate_overall(results: Dict[str, Dict]) -> Dict[str, float]:
+    """
+    汇总各相机结果为overall
+
+    标量取各相机均值；分割的混淆矩阵跨相机累加，得到全数据集mIoU。
+
+    Args:
+        results: {camera: 该相机的aggregate_metrics结果}
+
+    Returns:
+        overall指标
+    """
+    all_metrics = []
+    for camera, camera_results in results.items():
+        if camera == 'overall' or not camera_results:
+            continue
+        all_metrics.append({
+            k: v for k, v in camera_results.items()
+            if not k.endswith('_std')
+            and (k.endswith('conf_matrix') or not isinstance(v, (list, np.ndarray)))
+        })
+    return aggregate_metrics(all_metrics)
 
 
 def format_metrics_table(metrics: Dict[str, float],
@@ -430,7 +624,7 @@ def format_metrics_table(metrics: Dict[str, float],
     lines.append("-" * 50)
 
     for name in metric_names:
-        if name in metrics and not name.endswith('_std') and name not in ('class_iou', 'coarse_class_iou'):
+        if name in metrics and not name.endswith('_std') and not isinstance(metrics[name], (list, np.ndarray)):
             value = metrics[name]
             std_key = f'{name}_std'
             if std_key in metrics:
