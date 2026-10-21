@@ -179,6 +179,30 @@ class SAMSegmentorFast:
         print("成功加载 SAM")
 
     @torch.no_grad()
+    def _get_valid_embeddings(self, image: np.ndarray) -> torch.Tensor:
+        """
+        获取SAM image embedding，并裁掉padding区域
+
+        SamProcessor 把长边缩放到1024后，在下/右侧pad成1024x1024；
+        embedding (C, 64, 64) 中只有左上角对应真实图像内容（1280x720 → 64x36）。
+        不裁剪的话，padding区域会被拉伸进结果，且内容/padding交界处产生假边缘。
+
+        Returns:
+            features: (C, H', W')，仅含图像内容区域
+        """
+        inputs = self.processor(images=image, return_tensors="pt")
+        reshaped_h, reshaped_w = inputs["reshaped_input_sizes"][0].tolist()
+        pixel_values = inputs["pixel_values"].to(self.device)
+
+        image_embeddings = self.model.get_image_embeddings(pixel_values)
+        features = image_embeddings.squeeze(0)  # (C, 64, 64)
+
+        stride = pixel_values.shape[-1] // features.shape[-1]  # 1024 / 64 = 16
+        valid_h = int(np.ceil(reshaped_h / stride))
+        valid_w = int(np.ceil(reshaped_w / stride))
+        return features[:, :valid_h, :valid_w]
+
+    @torch.no_grad()
     def get_feature_map(self, image: np.ndarray) -> np.ndarray:
         """
         获取SAM的特征图
@@ -189,14 +213,9 @@ class SAMSegmentorFast:
         Returns:
             features: 特征图 (H, W, C)
         """
-        inputs = self.processor(images=image, return_tensors="pt")
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
-        # 获取image encoder的输出特征
-        image_embeddings = self.model.get_image_embeddings(inputs["pixel_values"])
-
-        # (1, C, H', W') -> (H', W', C)
-        features = image_embeddings.squeeze(0).permute(1, 2, 0).cpu().numpy()
+        # 获取image encoder的输出特征（已裁掉padding）
+        # (C, H', W') -> (H', W', C)
+        features = self._get_valid_embeddings(image).permute(1, 2, 0).cpu().numpy()
 
         # 上采样到原始大小
         from PIL import Image as PILImage
@@ -220,11 +239,7 @@ class SAMSegmentorFast:
         Returns:
             edge_map: 边缘图 (H, W), float32, 0-1
         """
-        inputs = self.processor(images=image, return_tensors="pt")
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
-        image_embeddings = self.model.get_image_embeddings(inputs["pixel_values"])
-        features = image_embeddings.squeeze(0)  # (C, H', W')
+        features = self._get_valid_embeddings(image)  # (C, H', W')，已裁掉padding
 
         # 计算特征梯度作为边缘
         grad_x = torch.diff(features, dim=2)  # 水平梯度
