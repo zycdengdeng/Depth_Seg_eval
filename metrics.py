@@ -395,7 +395,8 @@ def segmentation_metrics_from_confusion(conf_matrix: np.ndarray) -> Dict[str, fl
     在pred和gt中都没出现的类（union为0）IoU记为NaN，不参与mIoU。
 
     Args:
-        conf_matrix: (C, C) 混淆矩阵，行=gt，列=pred
+        conf_matrix: (C, C+1) 混淆矩阵，行=gt，列=pred；
+            最后一列是pred落在类别表之外（如被排除的地面类）的像素，只算作gt类的FN
 
     Returns:
         miou / pixel_acc / fwiou / class_iou
@@ -403,6 +404,7 @@ def segmentation_metrics_from_confusion(conf_matrix: np.ndarray) -> Dict[str, fl
     conf_matrix = np.asarray(conf_matrix, dtype=np.float64)
     num_classes = conf_matrix.shape[0]
     total = conf_matrix.sum()
+    pred_per_class = conf_matrix[:, :num_classes].sum(axis=0)
 
     if total == 0:
         return {
@@ -413,11 +415,11 @@ def segmentation_metrics_from_confusion(conf_matrix: np.ndarray) -> Dict[str, fl
         }
 
     # 像素准确率
-    intersection = np.diag(conf_matrix)
+    intersection = np.diag(conf_matrix[:, :num_classes])
     pixel_acc = intersection.sum() / total * 100
 
     # 每类IoU，未出现的类为NaN
-    union = conf_matrix.sum(axis=1) + conf_matrix.sum(axis=0) - intersection
+    union = conf_matrix.sum(axis=1) + pred_per_class - intersection
     valid_classes = union > 0
     iou_per_class = np.full(num_classes, np.nan)
     iou_per_class[valid_classes] = intersection[valid_classes] / union[valid_classes]
@@ -461,12 +463,22 @@ def compute_segmentation_metrics(pred: np.ndarray, gt: np.ndarray,
 
 def compute_confusion_matrix(pred: np.ndarray, gt: np.ndarray,
                               num_classes: int) -> np.ndarray:
-    """计算混淆矩阵（行=gt，列=pred）"""
-    mask = (gt >= 0) & (gt < num_classes) & (pred >= 0) & (pred < num_classes)
+    """
+    计算混淆矩阵 (C, C+1)，行=gt，列=pred
+
+    有效像素只由gt决定；pred不在类别表内的像素（如被排除的地面类、ignore）
+    记入最后一列，即算作该gt类的漏检，而不是被丢弃。
+    """
+    gt = gt.astype(np.int64)
+    pred = pred.astype(np.int64)
+    mask = (gt >= 0) & (gt < num_classes)
+    gt = gt[mask]
+    pred = pred[mask]
+    pred = np.where((pred >= 0) & (pred < num_classes), pred, num_classes)
     conf_matrix = np.bincount(
-        num_classes * gt[mask].astype(np.int64) + pred[mask].astype(np.int64),
-        minlength=num_classes ** 2
-    ).reshape(num_classes, num_classes)
+        (num_classes + 1) * gt + pred,
+        minlength=num_classes * (num_classes + 1)
+    ).reshape(num_classes, num_classes + 1)
     return conf_matrix
 
 
@@ -490,8 +502,8 @@ def compute_segmentation_consistency(pred_gen: np.ndarray, pred_gt: np.ndarray,
         pred_gen = _mask_flat_classes(pred_gen, ignore_index)
         pred_gt = _mask_flat_classes(pred_gt, ignore_index)
 
-    # 有效区域（两者都不是ignore的区域）
-    valid_mask = (pred_gen != ignore_index) & (pred_gt != ignore_index)
+    # 有效区域只由参照图(gt)决定；gen预测成被排除类的像素算不一致
+    valid_mask = pred_gt != ignore_index
 
     if valid_mask.sum() == 0:
         return {
