@@ -1,0 +1,13 @@
+# evalkit 依赖（只评测 PSNR/SSIM/LPIPS/KID/FID/δ1/AbsRel/Seg-Cons/Coarse-mIoU 时所需）
+torch>=2.0.0
+torchvision>=0.15.0
+transformers>=4.40.0     # Depth-Anything-V2 (HF 版需 >=4.40)、Mask2Former
+numpy>=1.21.0
+scipy>=1.9.0
+Pillow>=9.0.0
+scikit-image>=0.19.0     # SSIM
+lpips>=0.1.4             # LPIPS
+clean-fid>=0.1.35        # KID / FID
+opencv-python>=4.5.0     # 读取 mp4、GT 去畸变
+tqdm>=4.64.0
+pyyaml>=6.0

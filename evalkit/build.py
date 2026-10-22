@@ -180,3 +180,49 @@ def save_render_list(render_list: Dict, path: str) -> None:
         for s in render_list["samples"]:
             f.write(f"{s['clip']},{s['camera']},{s['timestamp']},{s['frame_idx']},{s['gt']}\n")
     print(f"已保存: {path}\n已保存: {csv_path}")
+
+
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
+
+
+def _index_images(root: str) -> Dict[str, str]:
+    """{相对路径去扩展名: 绝对路径}"""
+    index = {}
+    for dirpath, _, files in os.walk(root):
+        for name in files:
+            if os.path.splitext(name)[1].lower() in IMAGE_EXTS:
+                full = os.path.join(dirpath, name)
+                key = os.path.splitext(os.path.relpath(full, root))[0]
+                if key in index:
+                    raise ValueError(f"{root} 中存在同名不同扩展名的文件: {key}")
+                index[key] = full
+    return index
+
+
+def build_pairs_manifest(gen_dirs: Dict[str, str], gt_dir: str,
+                         clip_depth: int = 1) -> List[Dict]:
+    """
+    按相对路径（忽略扩展名）把各方法的推理结果与 GT 配对
+
+    Args:
+        gen_dirs: {方法名: 推理结果目录}
+        gt_dir: GT 目录（目录结构与推理结果一致）
+        clip_depth: 相对路径前几级目录作为 clip（置信区间按 clip 重采样）；
+            0 表示每个样本自成一个 clip（样本间独立时使用）
+    """
+    gt_index = _index_images(gt_dir)
+    if not gt_index:
+        raise ValueError(f"GT 目录中没有图像: {gt_dir}")
+
+    rows = []
+    for method, gen_dir in gen_dirs.items():
+        gen_index = _index_images(gen_dir)
+        matched = sorted(set(gen_index) & set(gt_index))
+        print(f"  {method:<20} 配对 {len(matched)}/{len(gt_index)}"
+              f"（推理结果多出 {len(set(gen_index) - set(gt_index))} 个未匹配文件）")
+        for key in matched:
+            parts = key.split(os.sep)
+            clip = os.sep.join(parts[:clip_depth]) if 0 < clip_depth < len(parts) else key
+            rows.append({"sample_id": key, "method": method, "clip": clip,
+                         "gen": gen_index[key], "gt": gt_index[key]})
+    return rows

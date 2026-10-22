@@ -2,7 +2,64 @@
 
 所有方法、所有任务共用同一套指标与流程。任何任务只要产出 **manifest**（gen 与 gt 一一对应的 CSV），即可直接评测。
 
-## 流程
+## 快速开始（小批量：推理结果目录 vs 真值目录）
+
+```bash
+git clone <本仓库> && cd Depth_Seg_eval
+git checkout claude/determined-pascal-6i0j27
+pip install -r evalkit/requirements.txt
+
+# 1. 检查环境、GPU、模型权重（首次有网络时会自动下载权重）
+python -m evalkit check --device cuda:0
+
+# 2. 推理结果与真值按相对路径配对（扩展名可不同，如 pred/a/001.png ↔ gt/a/001.jpg）
+python -m evalkit pairs --gen MyMethod=/data/pred --gt /data/gt --out ./results/manifest.csv
+#    多个方法：重复 --gen A=/data/predA --gen B=/data/predB
+#    --clip-depth 1（默认）：第一级子目录视为一个场景，置信区间按场景重采样；
+#    --clip-depth 0：每个样本独立（没有场景划分时使用）
+
+# 3. 评测
+python -m evalkit run --manifest ./results/manifest.csv --out ./results/eval --device cuda:0
+#    默认评测分辨率 1280x720；其他分辨率用 --eval-size W H
+#    样本少于 50 个时自动跳过 KID/FID（不可靠）
+```
+
+结果：`results/eval/table.md`（主表）、`summary.json`（均值 + 95% CI）、`per_sample.csv`（逐样本）。
+
+## 环境与模型权重
+
+需要整个仓库（evalkit 复用根目录的 `metrics.py`、`depth_eval.py`、`seg_eval.py`、`image_metrics_eval.py`、`utils.py`、`undistort.py`）。
+
+| 权重 | 大小 | 缓存位置 |
+|---|---|---|
+| depth-anything/Depth-Anything-V2-Large-hf | ~1.3 GB | `~/.cache/huggingface/hub/` |
+| facebook/mask2former-swin-large-cityscapes-semantic | ~0.9 GB | `~/.cache/huggingface/hub/` |
+| AlexNet（LPIPS 主干，torchvision） | ~233 MB | `~/.cache/torch/hub/checkpoints/alexnet-owt-7be5be79.pth` |
+| LPIPS 线性层 | 很小 | 随 `pip install lpips` 安装 |
+| Inception（clean-fid，KID/FID） | ~92 MB | `/tmp/inception-2015-12-05.pt` |
+
+**新服务器能联网**：不用拷任何东西，`check` 时自动下载。
+
+**新服务器不能联网**：从已跑通的服务器拷贝缓存，再离线运行：
+
+```bash
+# 在旧服务器上打包
+tar czf eval_weights.tgz -C ~ \
+    .cache/huggingface/hub/models--depth-anything--Depth-Anything-V2-Large-hf \
+    .cache/huggingface/hub/models--facebook--mask2former-swin-large-cityscapes-semantic \
+    .cache/torch/hub/checkpoints/alexnet-owt-7be5be79.pth
+cp /tmp/inception-2015-12-05.pt .   # 若存在
+
+# 在新服务器上解压
+tar xzf eval_weights.tgz -C ~
+cp inception-2015-12-05.pt /tmp/
+export HF_HUB_OFFLINE=1
+python -m evalkit check --device cuda:0
+```
+
+想让两台服务器的结果完全可比，Python 包版本也要一致：在旧服务器 `pip freeze > env_freeze.txt`，新服务器 `pip install -r env_freeze.txt`。
+
+## 完整流程（多方法、路侧→车端数据）
 
 ```bash
 # 1. 测试集清单（以 Ours 测试集为准：每个测试 clip 29 帧 × 7 相机）

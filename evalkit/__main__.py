@@ -13,6 +13,13 @@
     python -m evalkit run --manifest ./results/manifest.csv --out ./results/evalkit \\
         --gt-undistort tianjin --device cuda:0
 
+    # 小批量：推理结果目录 vs GT 目录（按相对路径/文件名配对，扩展名可不同）
+    python -m evalkit pairs --gen MyMethod=/data/pred --gt /data/gt --out ./results/manifest.csv
+    python -m evalkit run --manifest ./results/manifest.csv --out ./results/eval
+
+    # 新服务器环境/权重检查
+    python -m evalkit check --device cuda:0
+
     # 回归验证：旧数据公共帧（应与 gs_eval/tf_eval --common 结果一致）
     python -m evalkit legacy-common --out ./results/manifest_common.csv
 """
@@ -52,6 +59,17 @@ def main():
     p.add_argument("--ours", default=None, help="视频方法：名称=视频根目录")
     p.add_argument("--out", required=True)
 
+    p = sub.add_parser("pairs", help="推理结果目录 vs GT 目录，按相对路径配对生成 manifest")
+    p.add_argument("--gen", action="append", required=True, help="方法名=推理结果目录（可重复）")
+    p.add_argument("--gt", required=True, help="GT 目录")
+    p.add_argument("--clip-depth", type=int, default=1,
+                   help="相对路径前几级目录作为 clip（默认1）；0 表示每个样本独立")
+    p.add_argument("--out", required=True)
+
+    p = sub.add_parser("check", help="检查依赖、GPU 与模型权重（无网络时提示需拷贝的缓存）")
+    p.add_argument("--device", default="cuda")
+    p.add_argument("--metrics", nargs="+", default=list(ALL_GROUPS), choices=ALL_GROUPS)
+
     p = sub.add_parser("legacy-common", help="旧数据公共帧 manifest（回归验证用）")
     p.add_argument("--out", required=True)
 
@@ -67,6 +85,8 @@ def main():
     p.add_argument("--allow-partial", action="store_true",
                    help="不要求各方法样本一致（结果不可直接比较）")
     p.add_argument("--keep-images", action="store_true", help="保留 KID/FID 用的中间图像")
+    p.add_argument("--force-dist", action="store_true",
+                   help="样本数不足时也计算 KID/FID（默认少于 50 个样本时跳过）")
 
     args = parser.parse_args()
 
@@ -85,6 +105,17 @@ def main():
         write_manifest(rows, args.out)
         print(f"已保存: {args.out}（{len(rows)} 行）")
 
+    elif args.cmd == "pairs":
+        from .build import build_pairs_manifest
+        from .manifest import write_manifest
+        rows = build_pairs_manifest(_parse_named(args.gen), args.gt, clip_depth=args.clip_depth)
+        write_manifest(rows, args.out)
+        print(f"已保存: {args.out}（{len(rows)} 行）")
+
+    elif args.cmd == "check":
+        from .check import check_environment
+        sys.exit(0 if check_environment(args.device, args.metrics) else 1)
+
     elif args.cmd == "legacy-common":
         from .build import build_legacy_common_manifest
         from .manifest import write_manifest
@@ -97,7 +128,7 @@ def main():
         run(args.manifest, args.out, args.metrics, device=args.device,
             eval_size=tuple(args.eval_size), gt_undistort=args.gt_undistort,
             max_depth_ratio=args.max_depth_ratio, allow_partial=args.allow_partial,
-            keep_images=args.keep_images, methods=args.methods)
+            keep_images=args.keep_images, methods=args.methods, force_dist=args.force_dist)
 
 
 if __name__ == "__main__":

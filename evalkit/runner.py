@@ -22,6 +22,8 @@ from .manifest import read_manifest, check_alignment
 from .report import build_summary, format_table, save_summary
 from .scorers import Scorer, compute_distribution_metrics
 
+MIN_DIST_SAMPLES = 50
+
 
 def _sort_key(row: Dict):
     ts = row["timestamp"]
@@ -32,7 +34,8 @@ def run(manifest_path: str, out_dir: str,
         groups: List[str], device: str = "cuda",
         eval_size=(1280, 720), gt_undistort: str = "none",
         max_depth_ratio: float = 100.0, allow_partial: bool = False,
-        keep_images: bool = False, methods: Optional[List[str]] = None) -> Dict:
+        keep_images: bool = False, methods: Optional[List[str]] = None,
+        force_dist: bool = False) -> Dict:
     rows = read_manifest(manifest_path)
     if methods:
         rows = [r for r in rows if r["method"] in methods]
@@ -49,6 +52,12 @@ def run(manifest_path: str, out_dir: str,
         dropped -= len(rows)
         print(f"  只评测所有方法共有的 {len(align['common'])} 个样本"
               f"（丢弃 {dropped} 行；如需各评各的用 --allow-partial，结果不可直接比较）")
+
+    groups = list(groups)
+    n_samples = len({r["sample_id"] for r in rows})
+    if "dist" in groups and n_samples < MIN_DIST_SAMPLES and not force_dist:
+        groups.remove("dist")
+        print(f"  样本数 {n_samples} < {MIN_DIST_SAMPLES}，KID/FID 不可靠，已跳过（--force-dist 强制计算）")
 
     by_sample = defaultdict(list)
     for r in rows:
