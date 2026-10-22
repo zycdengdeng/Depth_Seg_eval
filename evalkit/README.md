@@ -7,7 +7,11 @@
 ```bash
 git clone <本仓库> && cd Depth_Seg_eval
 git checkout claude/determined-pascal-6i0j27
+# torch 先按驱动版本单独装（nvidia-smi 右上角 CUDA Version），如 12.8：
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 pip install -r evalkit/requirements.txt
+# home 空间不够时，把权重缓存放到大盘：
+# export HF_HOME=/mnt/xxx/hf_cache TORCH_HOME=/mnt/xxx/torch_cache
 
 # 1. 检查环境、GPU、模型权重（首次有网络时会自动下载权重）
 python -m evalkit check --device cuda:0
@@ -56,6 +60,8 @@ cp inception-2015-12-05.pt /tmp/
 export HF_HUB_OFFLINE=1
 python -m evalkit check --device cuda:0
 ```
+
+`check` 时如果 transformers 打印 `MISSING ... newly initialized`，说明权重没有正确加载（常见于 transformers 5.x），结果不可用。
 
 想让两台服务器的结果完全可比，Python 包版本也要一致：在旧服务器 `pip freeze > env_freeze.txt`，新服务器 `pip install -r env_freeze.txt`。
 

@@ -1,7 +1,11 @@
 # evalkit 依赖（只评测 PSNR/SSIM/LPIPS/KID/FID/δ1/AbsRel/Seg-Cons/Coarse-mIoU 时所需）
+#
+# torch 需与显卡驱动匹配，请先单独安装，例如驱动支持 CUDA 12.8：
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+# 跨服务器比较结果时，torch / transformers 等版本应与原服务器一致（pip freeze 对照）
 torch>=2.0.0
 torchvision>=0.15.0
-transformers>=4.40.0     # Depth-Anything-V2 (HF 版需 >=4.40)、Mask2Former
+transformers>=4.40.0,<5  # 5.x 加载 Mask2Former 时部分 Swin 权重不匹配（被随机初始化），不可用
 numpy>=1.21.0
 scipy>=1.9.0
 Pillow>=9.0.0
