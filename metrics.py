@@ -343,7 +343,7 @@ def compute_segmentation_metrics_multilevel(
     num_classes: int = 19,
     ignore_index: int = 255,
     compute_coarse: bool = True,
-    exclude_flat: bool = True,
+    exclude_flat: bool = False,
 ) -> Dict[str, float]:
     """
     同时计算细粒度(19类)和超类(7类, Cityscapes category)的分割指标
@@ -357,7 +357,7 @@ def compute_segmentation_metrics_multilevel(
         num_classes: 细粒度类别数
         ignore_index: 忽略的标签值
         compute_coarse: 是否计算超类指标（仅Cityscapes 19类时有效）
-        exclude_flat: 是否排除地面类（road/sidewalk）
+        exclude_flat: 是否排除地面类（road/sidewalk），默认不排除（与Cityscapes官方一致）
 
     Returns:
         包含细粒度和超类指标的字典
@@ -484,7 +484,7 @@ def compute_confusion_matrix(pred: np.ndarray, gt: np.ndarray,
 
 def compute_segmentation_consistency(pred_gen: np.ndarray, pred_gt: np.ndarray,
                                       ignore_index: int = 255,
-                                      exclude_flat: bool = True) -> Dict[str, float]:
+                                      exclude_flat: bool = False) -> Dict[str, float]:
     """
     计算分割一致性指标
     比较gen图像和gt图像经过同一分割模型后的分割结果一致性
@@ -493,7 +493,7 @@ def compute_segmentation_consistency(pred_gen: np.ndarray, pred_gt: np.ndarray,
         pred_gen: 对生成图像的分割预测
         pred_gt: 对真值图像的分割预测
         ignore_index: 忽略的标签值
-        exclude_flat: 是否排除地面类（road/sidewalk）
+        exclude_flat: 是否排除地面类（road/sidewalk），默认不排除（与Cityscapes官方一致）
 
     Returns:
         一致性指标

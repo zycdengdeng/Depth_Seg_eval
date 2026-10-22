@@ -330,19 +330,20 @@ def extract_boundaries(seg: np.ndarray) -> np.ndarray:
 
 
 def compute_edge_consistency(edge1: np.ndarray, edge2: np.ndarray,
-                             tolerance: int = 3) -> Dict[str, float]:
+                             tolerance: int = 3,
+                             threshold: float = 0.3) -> Dict[str, float]:
     """
     计算边缘一致性（基于SAM特征边缘图）
 
     Args:
         edge1, edge2: 边缘图 (H, W), float32, 0-1
         tolerance: 容差像素数
+        threshold: 边缘二值化阈值（边缘图已归一化到0-1）
 
     Returns:
         边缘一致性指标
     """
     # 二值化边缘
-    threshold = 0.3
     bin_edge1 = edge1 > threshold
     bin_edge2 = edge2 > threshold
 
